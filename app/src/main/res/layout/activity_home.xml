@@ -1,5 +1,4 @@
 <?xml version="1.0" encoding="utf-8"?>
-
 <!--
   Copyright 2015 Google Inc.
 
@@ -37,7 +36,7 @@
             android:background="@color/status_bar_back" />
 
         <android.support.v7.widget.RecyclerView
-            android:id="@+id/stories_grid"
+            android:id="@+id/grid"
             android:layout_width="match_parent"
             android:layout_height="match_parent"
             android:scrollbars="vertical"
@@ -67,6 +66,7 @@
             android:id="@+id/stub_no_filters"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
+            android:layout_margin="@dimen/spacing_huge"
             android:layout_gravity="center"
             android:layout="@layout/no_filters" />
 
@@ -89,6 +89,15 @@
             android:stateListAnimator="@animator/raise"
             android:src="@drawable/ic_add_dark" />
 
+        <ViewStub
+            android:id="@+id/stub_posting_progress"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_gravity="bottom|end"
+            android:layout_marginBottom="@dimen/padding_normal"
+            android:layout_marginEnd="@dimen/padding_normal"
+            android:layout="@layout/posting_progress" />
+
     </FrameLayout>
 
     <!-- filter drawer -->
@@ -102,7 +111,6 @@
         android:elevation="@dimen/z_drawer"
         android:background="@color/background_dark"
         android:clipToPadding="false"
-        android:fitsSystemWindows="true"
         android:scrollbars="vertical"
         android:scrollbarStyle="outsideOverlay"
         app:layoutManager="android.support.v7.widget.LinearLayoutManager"

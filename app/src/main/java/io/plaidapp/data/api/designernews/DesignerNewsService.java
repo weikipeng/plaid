@@ -16,23 +16,25 @@
 
 package io.plaidapp.data.api.designernews;
 
+import java.util.List;
 import java.util.Map;
 
+import io.plaidapp.data.api.EnvelopePayload;
 import io.plaidapp.data.api.designernews.model.AccessToken;
+import io.plaidapp.data.api.designernews.model.Comment;
 import io.plaidapp.data.api.designernews.model.NewStoryRequest;
-import io.plaidapp.data.api.designernews.model.StoriesResponse;
 import io.plaidapp.data.api.designernews.model.Story;
-import io.plaidapp.data.api.designernews.model.StoryResponse;
-import io.plaidapp.data.api.designernews.model.UserResponse;
-import retrofit.Callback;
-import retrofit.http.Body;
-import retrofit.http.FieldMap;
-import retrofit.http.FormUrlEncoded;
-import retrofit.http.GET;
-import retrofit.http.Headers;
-import retrofit.http.POST;
-import retrofit.http.Path;
-import retrofit.http.Query;
+import io.plaidapp.data.api.designernews.model.User;
+import retrofit2.Call;
+import retrofit2.http.Body;
+import retrofit2.http.Field;
+import retrofit2.http.FieldMap;
+import retrofit2.http.FormUrlEncoded;
+import retrofit2.http.GET;
+import retrofit2.http.Headers;
+import retrofit2.http.POST;
+import retrofit2.http.Path;
+import retrofit2.http.Query;
 
 /**
  * Models the Designer News API.
@@ -44,37 +46,46 @@ public interface DesignerNewsService {
 
     String ENDPOINT = "https://www.designernews.co/";
 
-    @GET("/api/v1/stories")
-    void getTopStories(@Query("page") Integer page,
-                       Callback<StoriesResponse> callback);
+    @EnvelopePayload("stories")
+    @GET("api/v1/stories")
+    Call<List<Story>> getTopStories(@Query("page") Integer page);
 
-    @GET("/api/v1/stories/recent")
-    void getRecentStories(@Query("page") Integer page,
-                          Callback<StoriesResponse> callback);
+    @EnvelopePayload("stories")
+    @GET("api/v1/stories/recent")
+    Call<List<Story>> getRecentStories(@Query("page") Integer page);
 
-    @GET("/api/v1/stories/search")
-    void search(@Query("query") String query,
-                @Query("page") Integer page,
-                Callback<StoriesResponse> callback);
+    @EnvelopePayload("stories")
+    @GET("api/v1/stories/search")
+    Call<List<Story>> search(@Query("query") String query, @Query("page") Integer page);
 
     @FormUrlEncoded
-    @POST("/oauth/token")
-    void login(@FieldMap() Map loginParams,
-               Callback<AccessToken> callback);
+    @POST("oauth/token")
+    Call<AccessToken> login(@FieldMap() Map<String, String> loginParams);
 
-    @GET("/api/v1/me")
-    void getAuthedUser(Callback<UserResponse> callback);
+    @EnvelopePayload("user")
+    @GET("api/v1/me")
+    Call<User> getAuthedUser();
 
-    @POST("/api/v1/stories/{id}/upvote")
-    void upvoteStory(@Path("id") long storyId,
-                     @Body String ignored,  // can remove when retrofit releases this fix:
-                     // https://github
-                     // .com/square/retrofit/commit/19ac1e2c4551448184ad66c4a0ec172e2741c2ee
-                     Callback<StoryResponse> callback);
+    @EnvelopePayload("story")
+    @POST("api/v1/stories/{id}/upvote")
+    Call<Story> upvoteStory(@Path("id") long storyId);
 
+    @EnvelopePayload("stories")
     @Headers("Content-Type: application/vnd.api+json")
-    @POST("/api/v2/stories")
-    void postStory(@Body NewStoryRequest story,
-                   Callback<StoriesResponse> callback);
+    @POST("api/v2/stories")
+    Call<List<Story>> postStory(@Body NewStoryRequest story);
+
+    @FormUrlEncoded
+    @POST("api/v1/stories/{id}/reply")
+    Call<Comment> comment(@Path("id") long storyId,
+                          @Field("comment[body]") String comment);
+
+    @FormUrlEncoded
+    @POST("api/v1/comments/{id}/reply")
+    Call<Comment> replyToComment(@Path("id") long commentId,
+                                 @Field("comment[body]") String comment);
+
+    @POST("api/v1/comments/{id}/upvote")
+    Call<Comment> upvoteComment(@Path("id") long commentId);
 
 }

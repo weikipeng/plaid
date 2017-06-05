@@ -16,52 +16,57 @@
 
 package io.plaidapp.ui;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.app.Activity;
+import android.app.ActivityOptions;
 import android.content.Intent;
 import android.os.Bundle;
 import android.support.design.widget.TextInputLayout;
+import android.support.v4.app.ShareCompat;
+import android.support.v4.content.ContextCompat;
 import android.text.TextUtils;
+import android.transition.Transition;
 import android.view.KeyEvent;
 import android.view.ViewGroup;
-import android.view.animation.AnimationUtils;
+import android.view.ViewTreeObserver;
 import android.view.inputmethod.EditorInfo;
 import android.widget.Button;
 import android.widget.EditText;
 import android.widget.TextView;
 
-import butterknife.Bind;
 import butterknife.BindDimen;
+import butterknife.BindView;
 import butterknife.ButterKnife;
 import butterknife.OnClick;
 import butterknife.OnEditorAction;
 import butterknife.OnTextChanged;
 import io.plaidapp.R;
-import io.plaidapp.ui.transitions.FabDialogMorphSetup;
+import io.plaidapp.data.api.designernews.PostStoryService;
+import io.plaidapp.data.prefs.DesignerNewsPrefs;
+import io.plaidapp.util.ShortcutHelper;
+import io.plaidapp.ui.transitions.FabTransform;
+import io.plaidapp.ui.transitions.MorphTransform;
 import io.plaidapp.ui.widget.BottomSheet;
 import io.plaidapp.ui.widget.ObservableScrollView;
+import io.plaidapp.util.AnimUtils;
 import io.plaidapp.util.ImeUtils;
 
 public class PostNewDesignerNewsStory extends Activity {
 
-    public static final String EXTRA_STORY_TITLE =
-            "EXTRA_STORY_TITLE";
-    public static final String EXTRA_STORY_URL =
-            "EXTRA_STORY_URL";
-    public static final String EXTRA_STORY_COMMENT =
-            "EXTRA_STORY_COMMENT";
-    public static final int RESULT_POST = 2;
     public static final int RESULT_DRAG_DISMISSED = 3;
+    public static final int RESULT_POSTING = 4;
 
-    @Bind(R.id.bottom_sheet) BottomSheet bottomSheet;
-    @Bind(R.id.bottom_sheet_content) ViewGroup bottomSheetContent;
-    @Bind(R.id.title) TextView sheetTitle;
-    @Bind(R.id.scroll_container) ObservableScrollView scrollContainer;
-    @Bind(R.id.new_story_title) EditText title;
-    @Bind(R.id.new_story_url_label) TextInputLayout urlLabel;
-    @Bind(R.id.new_story_url) EditText url;
-    @Bind(R.id.new_story_comment_label) TextInputLayout commentLabel;
-    @Bind(R.id.new_story_comment) EditText comment;
-    @Bind(R.id.new_story_post) Button post;
+    @BindView(R.id.bottom_sheet) BottomSheet bottomSheet;
+    @BindView(R.id.bottom_sheet_content) ViewGroup bottomSheetContent;
+    @BindView(R.id.title) TextView sheetTitle;
+    @BindView(R.id.scroll_container) ObservableScrollView scrollContainer;
+    @BindView(R.id.new_story_title) EditText title;
+    @BindView(R.id.new_story_url_label) TextInputLayout urlLabel;
+    @BindView(R.id.new_story_url) EditText url;
+    @BindView(R.id.new_story_comment_label) TextInputLayout commentLabel;
+    @BindView(R.id.new_story_comment) EditText comment;
+    @BindView(R.id.new_story_post) Button post;
     @BindDimen(R.dimen.z_app_bar) float appBarElevation;
 
     @Override
@@ -69,20 +74,20 @@ public class PostNewDesignerNewsStory extends Activity {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_post_new_designer_news_story);
         ButterKnife.bind(this);
-        FabDialogMorphSetup.setupSharedEelementTransitions(this, bottomSheetContent, 0);
+        if (!FabTransform.setup(this, bottomSheetContent)) {
+            MorphTransform.setup(this, bottomSheetContent,
+                    ContextCompat.getColor(this, R.color.background_light), 0);
+        }
 
-        bottomSheet.addListener(new BottomSheet.Listener() {
+        bottomSheet.registerCallback(new BottomSheet.Callbacks() {
             @Override
-            public void onDragDismissed() {
+            public void onSheetDismissed() {
                 // After a drag dismiss, finish without the shared element return transition as
                 // it no longer makes sense.  Let the launching window know it's a drag dismiss so
                 // that it can restore any UI used as an entering shared element
                 setResult(RESULT_DRAG_DISMISSED);
                 finish();
             }
-
-            @Override
-            public void onDrag(int top) { /* no-op */ }
         });
 
         scrollContainer.setListener(new ObservableScrollView.OnScrollListener() {
@@ -94,34 +99,80 @@ public class PostNewDesignerNewsStory extends Activity {
                             .translationZ(appBarElevation)
                             .setStartDelay(0L)
                             .setDuration(80L)
-                            .setInterpolator(AnimationUtils.loadInterpolator
-                                    (PostNewDesignerNewsStory.this, android.R.interpolator
-                                            .fast_out_slow_in))
+                            .setInterpolator(AnimUtils.getFastOutSlowInInterpolator
+                                    (PostNewDesignerNewsStory.this))
                             .start();
                 } else if (scrollY == 0 && sheetTitle.getTranslationZ() == appBarElevation) {
                     sheetTitle.animate()
                             .translationZ(0f)
                             .setStartDelay(0L)
                             .setDuration(80L)
-                            .setInterpolator(AnimationUtils.loadInterpolator
-                                    (PostNewDesignerNewsStory.this, android.R.interpolator
-                                            .fast_out_slow_in))
+                            .setInterpolator(AnimUtils.getFastOutSlowInInterpolator
+                                    (PostNewDesignerNewsStory.this))
                             .start();
                 }
             }
         });
+
+        // check for share intent
+        if (isShareIntent()) {
+            ShareCompat.IntentReader intentReader = ShareCompat.IntentReader.from(this);
+            url.setText(intentReader.getText());
+            title.setText(intentReader.getSubject());
+        }
+        if (!hasSharedElementTransition()) {
+            // when launched from share or app shortcut there is no shared element transition so
+            // animate up the bottom sheet to establish the spatial model i.e. that it can be
+            // dismissed downward
+            overridePendingTransition(R.anim.post_story_enter, R.anim.post_story_exit);
+            bottomSheetContent.getViewTreeObserver().addOnPreDrawListener(
+                    new ViewTreeObserver.OnPreDrawListener() {
+                @Override
+                public boolean onPreDraw() {
+                    bottomSheetContent.getViewTreeObserver().removeOnPreDrawListener(this);
+                    bottomSheetContent.setTranslationY(bottomSheetContent.getHeight());
+                    bottomSheetContent.animate()
+                            .translationY(0f)
+                            .setStartDelay(120L)
+                            .setDuration(240L)
+                            .setInterpolator(AnimUtils.getLinearOutSlowInInterpolator
+                                    (PostNewDesignerNewsStory.this));
+                    return false;
+                }
+            });
+        }
+        ShortcutHelper.reportPostUsed(this);
     }
 
     @Override
     protected void onPause() {
         // customize window animations
-        overridePendingTransition(0, R.anim.fade_out_rapidly);
+        overridePendingTransition(R.anim.post_story_enter, R.anim.post_story_exit);
         super.onPause();
+    }
+
+    @Override
+    public void onBackPressed() {
+        dismiss();
     }
 
     @OnClick(R.id.bottom_sheet)
     protected void dismiss() {
-        finishAfterTransition();
+        if (!hasSharedElementTransition()) {
+            bottomSheetContent.animate()
+                    .translationY(bottomSheetContent.getHeight())
+                    .setDuration(160L)
+                    .setInterpolator(AnimUtils.getFastOutLinearInInterpolator
+                            (PostNewDesignerNewsStory.this))
+                    .setListener(new AnimatorListenerAdapter() {
+                        @Override
+                        public void onAnimationEnd(Animator animation) {
+                            finish();
+                        }
+                    });
+        } else {
+            finishAfterTransition();
+        }
     }
 
     @OnTextChanged(R.id.new_story_title)
@@ -149,13 +200,34 @@ public class PostNewDesignerNewsStory extends Activity {
 
     @OnClick(R.id.new_story_post)
     protected void postNewStory() {
-        ImeUtils.hideIme(title);
-        Intent data = new Intent();
-        data.putExtra(EXTRA_STORY_TITLE, title.getText().toString());
-        data.putExtra(EXTRA_STORY_URL, url.getText().toString());
-        data.putExtra(EXTRA_STORY_COMMENT, comment.getText().toString());
-        setResult(RESULT_POST, data);
-        finishAfterTransition();
+        if (DesignerNewsPrefs.get(this).isLoggedIn()) {
+            ImeUtils.hideIme(title);
+            Intent postIntent = new Intent(PostStoryService.ACTION_POST_NEW_STORY, null,
+                    this, PostStoryService.class);
+            postIntent.putExtra(PostStoryService.EXTRA_STORY_TITLE, title.getText().toString());
+            postIntent.putExtra(PostStoryService.EXTRA_STORY_URL, url.getText().toString());
+            postIntent.putExtra(PostStoryService.EXTRA_STORY_COMMENT, comment.getText().toString());
+            postIntent.putExtra(PostStoryService.EXTRA_BROADCAST_RESULT,
+                    getIntent().getBooleanExtra(PostStoryService.EXTRA_BROADCAST_RESULT, false));
+            startService(postIntent);
+            setResult(RESULT_POSTING);
+            finishAfterTransition();
+        } else {
+            Intent login = new Intent(this, DesignerNewsLogin.class);
+            MorphTransform.addExtras(login, ContextCompat.getColor(this, R.color.designer_news), 0);
+            ActivityOptions options = ActivityOptions.makeSceneTransitionAnimation(
+                    this, post, getString(R.string.transition_designer_news_login));
+            startActivity(login, options.toBundle());
+        }
+    }
+
+    private boolean isShareIntent() {
+        return getIntent() != null && Intent.ACTION_SEND.equals(getIntent().getAction());
+    }
+
+    private boolean hasSharedElementTransition() {
+        Transition transition = getWindow().getSharedElementEnterTransition();
+        return (transition != null && !transition.getTargets().isEmpty());
     }
 
     private void setPostButtonState() {

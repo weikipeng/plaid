@@ -19,12 +19,16 @@ package io.plaidapp.ui;
 import android.Manifest;
 import android.accounts.Account;
 import android.accounts.AccountManager;
+import android.annotation.SuppressLint;
+import android.annotation.TargetApi;
 import android.app.Activity;
 import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.support.annotation.NonNull;
+import android.support.design.widget.Snackbar;
 import android.support.design.widget.TextInputLayout;
 import android.support.v4.content.ContextCompat;
 import android.text.Editable;
@@ -58,60 +62,53 @@ import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
 
-import butterknife.Bind;
+import butterknife.BindView;
 import butterknife.ButterKnife;
 import io.plaidapp.BuildConfig;
 import io.plaidapp.R;
-import io.plaidapp.data.api.ClientAuthInterceptor;
-import io.plaidapp.data.api.designernews.DesignerNewsService;
 import io.plaidapp.data.api.designernews.model.AccessToken;
 import io.plaidapp.data.api.designernews.model.User;
-import io.plaidapp.data.api.designernews.model.UserResponse;
 import io.plaidapp.data.prefs.DesignerNewsPrefs;
-import io.plaidapp.ui.transitions.FabDialogMorphSetup;
+import io.plaidapp.ui.transitions.FabTransform;
+import io.plaidapp.ui.transitions.MorphTransform;
 import io.plaidapp.util.ScrimUtil;
 import io.plaidapp.util.glide.CircleTransform;
-import retrofit.Callback;
-import retrofit.RestAdapter;
-import retrofit.RetrofitError;
-import retrofit.client.Response;
+import retrofit2.Call;
+import retrofit2.Callback;
+import retrofit2.Response;
 
 public class DesignerNewsLogin extends Activity {
 
     private static final int PERMISSIONS_REQUEST_GET_ACCOUNTS = 0;
 
     boolean isDismissing = false;
-    @Bind(R.id.container) ViewGroup container;
-    @Bind(R.id.dialog_title) TextView title;
-    @Bind(R.id.username_float_label) TextInputLayout usernameLabel;
-    @Bind(R.id.username) AutoCompleteTextView username;
-    @Bind(R.id.permission_primer) CheckBox permissionPrimer;
-    @Bind(R.id.password_float_label) TextInputLayout passwordLabel;
-    @Bind(R.id.password) EditText password;
-    @Bind(R.id.actions_container) FrameLayout actionsContainer;
-    @Bind(R.id.signup) Button signup;
-    @Bind(R.id.login) Button login;
-    @Bind(R.id.loading) ProgressBar loading;
-    private DesignerNewsPrefs designerNewsPrefs;
+    @BindView(R.id.container) ViewGroup container;
+    @BindView(R.id.dialog_title) TextView title;
+    @BindView(R.id.username_float_label) TextInputLayout usernameLabel;
+    @BindView(R.id.username) AutoCompleteTextView username;
+    @BindView(R.id.permission_primer) CheckBox permissionPrimer;
+    @BindView(R.id.password_float_label) TextInputLayout passwordLabel;
+    @BindView(R.id.password) EditText password;
+    @BindView(R.id.actions_container) FrameLayout actionsContainer;
+    @BindView(R.id.signup) Button signup;
+    @BindView(R.id.login) Button login;
+    @BindView(R.id.loading) ProgressBar loading;
+    DesignerNewsPrefs designerNewsPrefs;
+    private boolean shouldPromptForPermission = false;
 
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_designer_news_login);
         ButterKnife.bind(this);
-        FabDialogMorphSetup.setupSharedEelementTransitions(this, container,
-                getResources().getDimensionPixelSize(R.dimen.dialog_corners));
+        if (!FabTransform.setup(this, container)) {
+            MorphTransform.setup(this, container,
+                    ContextCompat.getColor(this, R.color.background_light),
+                    getResources().getDimensionPixelSize(R.dimen.dialog_corners));
+        }
 
         loading.setVisibility(View.GONE);
         setupAccountAutocomplete();
-        username.setOnFocusChangeListener(new View.OnFocusChangeListener() {
-            @Override
-            public void onFocusChange(View v, boolean hasFocus) {
-                if (hasFocus && username.isAttachedToWindow()) {
-                    username.showDropDown();
-                }
-            }
-        });
         username.addTextChangedListener(loginFieldWatcher);
         // the primer checkbox messes with focus order so force it
         username.setOnEditorActionListener(new TextView.OnEditorActionListener() {
@@ -138,15 +135,34 @@ public class DesignerNewsLogin extends Activity {
         designerNewsPrefs = DesignerNewsPrefs.get(this);
     }
 
+    @Override @SuppressLint("NewApi")
+    public void onEnterAnimationComplete() {
+        /* Postpone some of the setup steps so that we can run it after the enter transition (if
+        there is one). Otherwise we may show the permissions dialog or account dropdown during the
+        enter animation which is jarring. */
+        if (shouldPromptForPermission) {
+            requestPermissions(new String[]{Manifest.permission.GET_ACCOUNTS},
+                    PERMISSIONS_REQUEST_GET_ACCOUNTS);
+            shouldPromptForPermission = false;
+        }
+        username.setOnFocusChangeListener(new View.OnFocusChangeListener() {
+            @Override
+            public void onFocusChange(View v, boolean hasFocus) {
+                maybeShowAccounts();
+            }
+        });
+        maybeShowAccounts();
+    }
+
     @Override
     public void onBackPressed() {
         dismiss(null);
     }
 
-    @Override
+    @Override @TargetApi(Build.VERSION_CODES.M)
     public void onRequestPermissionsResult(int requestCode,
-                                           String[] permissions,
-                                           int[] grantResults) {
+                                           @NonNull String[] permissions,
+                                           @NonNull int[] grantResults) {
         if (requestCode == PERMISSIONS_REQUEST_GET_ACCOUNTS) {
             TransitionManager.beginDelayedTransition(container);
             if (grantResults[0] == PackageManager.PERMISSION_GRANTED) {
@@ -183,95 +199,32 @@ public class DesignerNewsLogin extends Activity {
         finishAfterTransition();
     }
 
-    private TextWatcher loginFieldWatcher = new TextWatcher() {
-        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
-
-        @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
-
-        @Override
-        public void afterTextChanged(Editable s) {
-            login.setEnabled(isLoginValid());
+    void maybeShowAccounts() {
+        if (username.hasFocus()
+                && username.isAttachedToWindow()
+                && username.getAdapter() != null
+                && username.getAdapter().getCount() > 0) {
+            username.showDropDown();
         }
-    };
+    }
 
-    private boolean isLoginValid() {
+    boolean isLoginValid() {
         return username.length() > 0 && password.length() > 0;
     }
 
-    private void showLoading() {
-        TransitionManager.beginDelayedTransition(container);
-        title.setVisibility(View.GONE);
-        usernameLabel.setVisibility(View.GONE);
-        passwordLabel.setVisibility(View.GONE);
-        actionsContainer.setVisibility(View.GONE);
-        loading.setVisibility(View.VISIBLE);
-    }
-
-    private void showLogin() {
-        TransitionManager.beginDelayedTransition(container);
-        title.setVisibility(View.VISIBLE);
-        usernameLabel.setVisibility(View.VISIBLE);
-        passwordLabel.setVisibility(View.VISIBLE);
-        actionsContainer.setVisibility(View.VISIBLE);
-        loading.setVisibility(View.GONE);
-    }
-
-    private void getAccessToken() {
-        DesignerNewsService designerNewsService = new RestAdapter.Builder()
-                .setEndpoint(DesignerNewsService.ENDPOINT)
-                .setRequestInterceptor(new ClientAuthInterceptor(designerNewsPrefs.getAccessToken(),
-                        BuildConfig.DESIGNER_NEWS_CLIENT_ID))
-                .build()
-                .create(DesignerNewsService.class);
-        designerNewsService.login(
-                buildLoginParams(username.getText().toString(), password.getText().toString()),
-                new Callback<AccessToken>() {
-                    @Override
-                    public void success(AccessToken accessToken, Response response) {
-                        designerNewsPrefs.setAccessToken(accessToken.access_token);
-                        showLoggedInUser();
-                        setResult(Activity.RESULT_OK);
-                        finish();
-                    }
-
-                    @Override
-                    public void failure(RetrofitError error) {
-                        Log.e(getClass().getCanonicalName(), error.getMessage(), error);
-                        // TODO snackbar?
-                        Toast.makeText(getApplicationContext(), "Log in failed",
-                                Toast.LENGTH_LONG).show();
-                        showLogin();
-                        password.requestFocus();
-                    }
-                });
-    }
-
-    private Map buildLoginParams(@NonNull String username, @NonNull String password) {
-        Map loginParams = new HashMap(5);
-        loginParams.put("client_id", BuildConfig.DESIGNER_NEWS_CLIENT_ID);
-        loginParams.put("client_secret", BuildConfig.DESIGNER_NEWS_CLIENT_SECRET);
-        loginParams.put("grant_type", "password");
-        loginParams.put("username", username);
-        loginParams.put("password", password);
-        return loginParams;
-    }
-
-    private void showLoggedInUser() {
-        DesignerNewsService designerNewsService = new RestAdapter.Builder()
-                .setEndpoint(DesignerNewsService.ENDPOINT)
-                .setRequestInterceptor(new ClientAuthInterceptor(designerNewsPrefs.getAccessToken(),
-                        BuildConfig.DESIGNER_NEWS_CLIENT_ID))
-                .build()
-                .create(DesignerNewsService.class);
-        designerNewsService.getAuthedUser(new Callback<UserResponse>() {
+    @SuppressLint("InflateParams")
+    void showLoggedInUser() {
+        final Call<User> authedUser = designerNewsPrefs.getApi().getAuthedUser();
+        authedUser.enqueue(new Callback<User>() {
             @Override
-            public void success(UserResponse userResponse, Response response) {
-                final User user = userResponse.user;
+            public void onResponse(Call<User> call, Response<User> response) {
+                if (!response.isSuccessful()) return;
+                final User user = response.body();
                 designerNewsPrefs.setLoggedInUser(user);
-                Toast confirmLogin = new Toast(getApplicationContext());
-                View v = LayoutInflater.from(DesignerNewsLogin.this).inflate(R.layout
+                final Toast confirmLogin = new Toast(getApplicationContext());
+                final View v = LayoutInflater.from(DesignerNewsLogin.this).inflate(R.layout
                         .toast_logged_in_confirmation, null, false);
-                ((TextView) v.findViewById(R.id.name)).setText(user.display_name);
+                ((TextView) v.findViewById(R.id.name)).setText(user.display_name.toLowerCase());
                 // need to use app context here as the activity will be destroyed shortly
                 Glide.with(getApplicationContext())
                         .load(user.portrait_url)
@@ -289,12 +242,83 @@ public class DesignerNewsLogin extends Activity {
             }
 
             @Override
-            public void failure(RetrofitError error) {
-                Log.e(getClass().getCanonicalName(), error.getMessage(), error);
+            public void onFailure(Call<User> call, Throwable t) {
+                Log.e(getClass().getCanonicalName(), t.getMessage(), t);
             }
         });
     }
 
+    void showLoginFailed() {
+        Snackbar.make(container, R.string.login_failed, Snackbar.LENGTH_SHORT).show();
+        showLogin();
+        password.requestFocus();
+    }
+
+    private TextWatcher loginFieldWatcher = new TextWatcher() {
+        @Override public void beforeTextChanged(CharSequence s, int start, int count, int after) { }
+
+        @Override public void onTextChanged(CharSequence s, int start, int before, int count) { }
+
+        @Override
+        public void afterTextChanged(Editable s) {
+            login.setEnabled(isLoginValid());
+        }
+    };
+
+    private void showLoading() {
+        TransitionManager.beginDelayedTransition(container);
+        title.setVisibility(View.GONE);
+        usernameLabel.setVisibility(View.GONE);
+        permissionPrimer.setVisibility(View.GONE);
+        passwordLabel.setVisibility(View.GONE);
+        actionsContainer.setVisibility(View.GONE);
+        loading.setVisibility(View.VISIBLE);
+    }
+
+    private void showLogin() {
+        TransitionManager.beginDelayedTransition(container);
+        title.setVisibility(View.VISIBLE);
+        usernameLabel.setVisibility(View.VISIBLE);
+        passwordLabel.setVisibility(View.VISIBLE);
+        actionsContainer.setVisibility(View.VISIBLE);
+        loading.setVisibility(View.GONE);
+    }
+
+    private void getAccessToken() {
+        final Call<AccessToken> login = designerNewsPrefs.getApi().login(
+                buildLoginParams(username.getText().toString(), password.getText().toString()));
+        login.enqueue(new Callback<AccessToken>() {
+            @Override
+            public void onResponse(Call<AccessToken> call, Response<AccessToken> response) {
+                if (response.isSuccessful()) {
+                    designerNewsPrefs.setAccessToken(DesignerNewsLogin.this, response.body().access_token);
+                    showLoggedInUser();
+                    setResult(Activity.RESULT_OK);
+                    finish();
+                } else {
+                    showLoginFailed();
+                }
+            }
+
+            @Override
+            public void onFailure(Call<AccessToken> call, Throwable t) {
+                Log.e(getClass().getCanonicalName(), t.getMessage(), t);
+                showLoginFailed();
+            }
+        });
+    }
+
+    private Map<String, String> buildLoginParams(@NonNull String username, @NonNull String password) {
+        final Map<String, String> loginParams = new HashMap<>(5);
+        loginParams.put("client_id", BuildConfig.DESIGNER_NEWS_CLIENT_ID);
+        loginParams.put("client_secret", BuildConfig.DESIGNER_NEWS_CLIENT_SECRET);
+        loginParams.put("grant_type", "password");
+        loginParams.put("username", username);
+        loginParams.put("password", password);
+        return loginParams;
+    }
+
+    @SuppressLint("NewApi")
     private void setupAccountAutocomplete() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.GET_ACCOUNTS) ==
                 PackageManager.PERMISSION_GRANTED) {
@@ -313,12 +337,12 @@ public class DesignerNewsLogin extends Activity {
                 setupPermissionPrimer();
             } else {
                 permissionPrimer.setVisibility(View.GONE);
-                requestPermissions(new String[]{ Manifest.permission.GET_ACCOUNTS },
-                        PERMISSIONS_REQUEST_GET_ACCOUNTS);
+                shouldPromptForPermission = true;
             }
         }
     }
 
+    @TargetApi(Build.VERSION_CODES.M)
     private void setupPermissionPrimer() {
         permissionPrimer.setChecked(false);
         permissionPrimer.setVisibility(View.VISIBLE);

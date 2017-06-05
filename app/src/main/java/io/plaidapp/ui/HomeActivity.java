@@ -16,24 +16,31 @@
 
 package io.plaidapp.ui;
 
+import android.animation.Animator;
+import android.animation.AnimatorListenerAdapter;
 import android.app.Activity;
 import android.app.ActivityManager;
 import android.app.ActivityOptions;
+import android.content.BroadcastReceiver;
 import android.content.Context;
 import android.content.Intent;
+import android.content.IntentFilter;
 import android.graphics.Bitmap;
 import android.graphics.BitmapFactory;
 import android.graphics.Typeface;
 import android.graphics.drawable.AnimatedVectorDrawable;
 import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
 import android.net.NetworkInfo;
+import android.net.NetworkRequest;
 import android.os.Bundle;
-import android.support.annotation.ColorInt;
+import android.support.annotation.Nullable;
 import android.support.v4.content.ContextCompat;
+import android.support.v4.content.LocalBroadcastManager;
 import android.support.v4.view.GravityCompat;
 import android.support.v4.widget.DrawerLayout;
 import android.support.v7.widget.GridLayoutManager;
-import android.support.v7.widget.LinearLayoutManager;
 import android.support.v7.widget.RecyclerView;
 import android.support.v7.widget.helper.ItemTouchHelper;
 import android.text.Spannable;
@@ -43,16 +50,15 @@ import android.text.TextUtils;
 import android.text.style.ForegroundColorSpan;
 import android.text.style.ImageSpan;
 import android.text.style.StyleSpan;
-import android.util.Log;
+import android.transition.TransitionManager;
 import android.view.Menu;
 import android.view.MenuItem;
 import android.view.MotionEvent;
 import android.view.View;
+import android.view.ViewAnimationUtils;
 import android.view.ViewGroup;
 import android.view.ViewStub;
 import android.view.WindowInsets;
-import android.view.animation.AnimationUtils;
-import android.widget.ActionMenuView;
 import android.widget.FrameLayout;
 import android.widget.ImageButton;
 import android.widget.ImageView;
@@ -66,34 +72,27 @@ import java.util.ArrayList;
 import java.util.Collections;
 import java.util.List;
 
-import butterknife.Bind;
 import butterknife.BindInt;
+import butterknife.BindView;
 import butterknife.ButterKnife;
 import butterknife.OnClick;
-import io.plaidapp.BuildConfig;
 import io.plaidapp.R;
 import io.plaidapp.data.DataManager;
 import io.plaidapp.data.PlaidItem;
 import io.plaidapp.data.Source;
-import io.plaidapp.data.api.ClientAuthInterceptor;
-import io.plaidapp.data.api.designernews.DesignerNewsService;
-import io.plaidapp.data.api.designernews.model.NewStoryRequest;
-import io.plaidapp.data.api.designernews.model.StoriesResponse;
+import io.plaidapp.data.api.designernews.PostStoryService;
 import io.plaidapp.data.api.designernews.model.Story;
 import io.plaidapp.data.pocket.PocketUtils;
 import io.plaidapp.data.prefs.DesignerNewsPrefs;
 import io.plaidapp.data.prefs.DribbblePrefs;
 import io.plaidapp.data.prefs.SourceManager;
 import io.plaidapp.ui.recyclerview.FilterTouchHelperCallback;
+import io.plaidapp.ui.recyclerview.GridItemDividerDecoration;
 import io.plaidapp.ui.recyclerview.InfiniteScrollListener;
-import io.plaidapp.ui.transitions.FabDialogMorphSetup;
+import io.plaidapp.ui.transitions.FabTransform;
+import io.plaidapp.ui.transitions.MorphTransform;
 import io.plaidapp.util.AnimUtils;
-import io.plaidapp.util.ColorUtils;
 import io.plaidapp.util.ViewUtils;
-import retrofit.Callback;
-import retrofit.RestAdapter;
-import retrofit.RetrofitError;
-import retrofit.client.Response;
 
 
 public class HomeActivity extends Activity {
@@ -105,20 +104,24 @@ public class HomeActivity extends Activity {
     private static final int RC_NEW_DESIGNER_NEWS_STORY = 4;
     private static final int RC_NEW_DESIGNER_NEWS_LOGIN = 5;
 
-    @Bind(R.id.drawer) DrawerLayout drawer;
-    @Bind(R.id.toolbar) Toolbar toolbar;
-    @Bind(R.id.stories_grid) RecyclerView grid;
-    @Bind(R.id.fab) ImageButton fab;
-    @Bind(R.id.filters) RecyclerView filtersList;
-    @Bind(android.R.id.empty) ProgressBar loading;
-    private TextView noFiltersEmptyText;
-    private GridLayoutManager layoutManager;
+    @BindView(R.id.drawer) DrawerLayout drawer;
+    @BindView(R.id.toolbar) Toolbar toolbar;
+    @BindView(R.id.grid) RecyclerView grid;
+    @BindView(R.id.fab) ImageButton fab;
+    @BindView(R.id.filters) RecyclerView filtersList;
+    @BindView(android.R.id.empty) ProgressBar loading;
+    @Nullable @BindView(R.id.no_connection) ImageView noConnection;
+    ImageButton fabPosting;
+    GridLayoutManager layoutManager;
     @BindInt(R.integer.num_columns) int columns;
+    boolean connected = true;
+    private TextView noFiltersEmptyText;
+    private boolean monitoringConnectivity = false;
 
     // data
-    private DataManager dataManager;
-    private FeedAdapter adapter;
-    private FilterAdapter filtersAdapter;
+    DataManager dataManager;
+    FeedAdapter adapter;
+    FilterAdapter filtersAdapter;
     private DesignerNewsPrefs designerNewsPrefs;
     private DribbblePrefs dribbblePrefs;
 
@@ -132,24 +135,25 @@ public class HomeActivity extends Activity {
                 | View.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN
                 | View.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION);
 
-        //toolbar.inflateMenu(R.menu.main);
         setActionBar(toolbar);
         if (savedInstanceState == null) {
             animateToolbar();
         }
+        setExitSharedElementCallback(FeedAdapter.createSharedElementReenterCallback(this));
 
         dribbblePrefs = DribbblePrefs.get(this);
         designerNewsPrefs = DesignerNewsPrefs.get(this);
         filtersAdapter = new FilterAdapter(this, SourceManager.getSources(this),
                 new FilterAdapter.FilterAuthoriser() {
             @Override
-            public void requestDribbbleAuthorisation(View sharedElemeent, Source forSource) {
+            public void requestDribbbleAuthorisation(View sharedElement, Source forSource) {
                 Intent login = new Intent(HomeActivity.this, DribbbleLogin.class);
-                login.putExtra(FabDialogMorphSetup.EXTRA_SHARED_ELEMENT_START_COLOR,
-                        ContextCompat.getColor(HomeActivity.this, R.color.background_dark));
+                MorphTransform.addExtras(login,
+                        ContextCompat.getColor(HomeActivity.this, R.color.background_dark),
+                        sharedElement.getHeight() / 2);
                 ActivityOptions options =
                         ActivityOptions.makeSceneTransitionAnimation(HomeActivity.this,
-                                sharedElemeent, getString(R.string.transition_dribbble_login));
+                                sharedElement, getString(R.string.transition_dribbble_login));
                 startActivityForResult(login,
                         getAuthSourceRequestCode(forSource), options.toBundle());
             }
@@ -161,17 +165,18 @@ public class HomeActivity extends Activity {
                 checkEmptyState();
             }
         };
-        adapter = new FeedAdapter(this, dataManager, PocketUtils.isPocketInstalled(this));
+        adapter = new FeedAdapter(this, dataManager, columns, PocketUtils.isPocketInstalled(this));
+
         grid.setAdapter(adapter);
         layoutManager = new GridLayoutManager(this, columns);
         layoutManager.setSpanSizeLookup(new GridLayoutManager.SpanSizeLookup() {
             @Override
             public int getSpanSize(int position) {
-                return position == adapter.getDataItemCount() ? columns : 1;
+                return adapter.getItemColumnSpan(position);
             }
         });
         grid.setLayoutManager(layoutManager);
-        grid.addOnScrollListener(gridScroll);
+        grid.addOnScrollListener(toolbarElevation);
         grid.addOnScrollListener(new InfiniteScrollListener(layoutManager, dataManager) {
             @Override
             public void onLoadMore() {
@@ -179,6 +184,9 @@ public class HomeActivity extends Activity {
             }
         });
         grid.setHasFixedSize(true);
+        grid.addItemDecoration(new GridItemDividerDecoration(adapter.getDividedViewHolderClasses(),
+                this, R.dimen.divider_height, R.color.divider));
+        grid.setItemAnimator(new HomeGridItemAnimator());
 
         // drawer layout treats fitsSystemWindows specially so we have to handle insets ourselves
         drawer.setOnApplyWindowInsetsListener(new View.OnApplyWindowInsetsListener() {
@@ -188,15 +196,17 @@ public class HomeActivity extends Activity {
                 ViewGroup.MarginLayoutParams lpToolbar = (ViewGroup.MarginLayoutParams) toolbar
                         .getLayoutParams();
                 lpToolbar.topMargin += insets.getSystemWindowInsetTop();
+                lpToolbar.leftMargin += insets.getSystemWindowInsetLeft();
                 lpToolbar.rightMargin += insets.getSystemWindowInsetRight();
                 toolbar.setLayoutParams(lpToolbar);
 
                 // inset the grid top by statusbar+toolbar & the bottom by the navbar (don't clip)
-                grid.setPadding(grid.getPaddingLeft(),
-                        insets.getSystemWindowInsetTop() + ViewUtils.getActionBarSize
-                                (HomeActivity.this),
+                grid.setPadding(
+                        grid.getPaddingLeft() + insets.getSystemWindowInsetLeft(), // landscape
+                        insets.getSystemWindowInsetTop()
+                                + ViewUtils.getActionBarSize(HomeActivity.this),
                         grid.getPaddingRight() + insets.getSystemWindowInsetRight(), // landscape
-                        grid.getPaddingBottom());
+                        grid.getPaddingBottom() + insets.getSystemWindowInsetBottom());
 
                 // inset the fab for the navbar
                 ViewGroup.MarginLayoutParams lpFab = (ViewGroup.MarginLayoutParams) fab
@@ -204,6 +214,13 @@ public class HomeActivity extends Activity {
                 lpFab.bottomMargin += insets.getSystemWindowInsetBottom(); // portrait
                 lpFab.rightMargin += insets.getSystemWindowInsetRight(); // landscape
                 fab.setLayoutParams(lpFab);
+
+                View postingStub = findViewById(R.id.stub_posting_progress);
+                ViewGroup.MarginLayoutParams lpPosting =
+                        (ViewGroup.MarginLayoutParams) postingStub.getLayoutParams();
+                lpPosting.bottomMargin += insets.getSystemWindowInsetBottom(); // portrait
+                lpPosting.rightMargin += insets.getSystemWindowInsetRight(); // landscape
+                postingStub.setLayoutParams(lpPosting);
 
                 // we place a background behind the status bar to combine with it's semi-transparent
                 // color to get the desired appearance.  Set it's height to the status bar height
@@ -217,9 +234,10 @@ public class HomeActivity extends Activity {
                 // need to set the padding end for landscape case
                 final boolean ltr = filtersList.getLayoutDirection() == View.LAYOUT_DIRECTION_LTR;
                 filtersList.setPaddingRelative(filtersList.getPaddingStart(),
-                       filtersList.getPaddingTop() + insets.getSystemWindowInsetTop(),
-                       filtersList.getPaddingEnd() + (ltr ? insets.getSystemWindowInsetRight() : 0),
-                       filtersList.getPaddingBottom() + insets.getSystemWindowInsetBottom());
+                        filtersList.getPaddingTop() + insets.getSystemWindowInsetTop(),
+                        filtersList.getPaddingEnd() + (ltr ? insets.getSystemWindowInsetRight() :
+                                0),
+                        filtersList.getPaddingBottom() + insets.getSystemWindowInsetBottom());
 
                 // clear this listener so insets aren't re-applied
                 drawer.setOnApplyWindowInsetsListener(null);
@@ -230,19 +248,210 @@ public class HomeActivity extends Activity {
         setupTaskDescription();
 
         filtersList.setAdapter(filtersAdapter);
-        filtersAdapter.addFilterChangedListener(filtersChangedListener);
-        filtersAdapter.addFilterChangedListener(dataManager);
+        filtersList.setItemAnimator(new FilterAdapter.FilterAnimator());
+        filtersAdapter.registerFilterChangedCallback(filtersChangedCallbacks);
         dataManager.loadAllDataSources();
         ItemTouchHelper.Callback callback = new FilterTouchHelperCallback(filtersAdapter);
         ItemTouchHelper itemTouchHelper = new ItemTouchHelper(callback);
         itemTouchHelper.attachToRecyclerView(filtersList);
         checkEmptyState();
+    }
+
+    @Override
+    protected void onResume() {
+        super.onResume();
+        dribbblePrefs.addLoginStatusListener(filtersAdapter);
         checkConnectivity();
     }
 
+    @Override
+    protected void onPause() {
+        dribbblePrefs.removeLoginStatusListener(filtersAdapter);
+        if (monitoringConnectivity) {
+            final ConnectivityManager connectivityManager
+                    = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
+            connectivityManager.unregisterNetworkCallback(connectivityCallback);
+            monitoringConnectivity = false;
+        }
+        super.onPause();
+    }
+
+    @Override
+    public void onActivityReenter(int resultCode, Intent data) {
+        if (data == null || resultCode != RESULT_OK
+                || !data.hasExtra(DribbbleShot.RESULT_EXTRA_SHOT_ID)) return;
+
+        // When reentering, if the shared element is no longer on screen (e.g. after an
+        // orientation change) then scroll it into view.
+        final long sharedShotId = data.getLongExtra(DribbbleShot.RESULT_EXTRA_SHOT_ID, -1L);
+        if (sharedShotId != -1L                                             // returning from a shot
+                && adapter.getDataItemCount() > 0                           // grid populated
+                && grid.findViewHolderForItemId(sharedShotId) == null) {    // view not attached
+            final int position = adapter.getItemPosition(sharedShotId);
+            if (position == RecyclerView.NO_POSITION) return;
+
+            // delay the transition until our shared element is on-screen i.e. has been laid out
+            postponeEnterTransition();
+            grid.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                @Override
+                public void onLayoutChange(View v, int l, int t, int r, int b,
+                                           int oL, int oT, int oR, int oB) {
+                    grid.removeOnLayoutChangeListener(this);
+                    startPostponedEnterTransition();
+                }
+            });
+            grid.scrollToPosition(position);
+            toolbar.setTranslationZ(-1f);
+        }
+    }
+
+    @Override
+    public boolean onCreateOptionsMenu(Menu menu) {
+        getMenuInflater().inflate(R.menu.main, menu);
+        return true;
+    }
+
+    @Override
+    public boolean onPrepareOptionsMenu(Menu menu) {
+        final MenuItem dribbbleLogin = menu.findItem(R.id.menu_dribbble_login);
+        if (dribbbleLogin != null) {
+            dribbbleLogin.setTitle(dribbblePrefs.isLoggedIn() ?
+                    R.string.dribbble_log_out : R.string.dribbble_login);
+        }
+        final MenuItem designerNewsLogin = menu.findItem(R.id.menu_designer_news_login);
+        if (designerNewsLogin != null) {
+            designerNewsLogin.setTitle(designerNewsPrefs.isLoggedIn() ?
+                    R.string.designer_news_log_out : R.string.designer_news_login);
+        }
+        return true;
+    }
+
+    @Override
+    public boolean onOptionsItemSelected(MenuItem item) {
+        switch (item.getItemId()) {
+            case R.id.menu_filter:
+                drawer.openDrawer(GravityCompat.END);
+                return true;
+            case R.id.menu_search:
+                View searchMenuView = toolbar.findViewById(R.id.menu_search);
+                Bundle options = ActivityOptions.makeSceneTransitionAnimation(this, searchMenuView,
+                        getString(R.string.transition_search_back)).toBundle();
+                startActivityForResult(new Intent(this, SearchActivity.class), RC_SEARCH, options);
+                return true;
+            case R.id.menu_dribbble_login:
+                if (!dribbblePrefs.isLoggedIn()) {
+                    dribbblePrefs.login(HomeActivity.this);
+                } else {
+                    dribbblePrefs.logout();
+                    // TODO something better than a toast!!
+                    Toast.makeText(getApplicationContext(), R.string.dribbble_logged_out, Toast
+                            .LENGTH_SHORT).show();
+                }
+                return true;
+            case R.id.menu_designer_news_login:
+                if (!designerNewsPrefs.isLoggedIn()) {
+                    startActivity(new Intent(this, DesignerNewsLogin.class));
+                } else {
+                    designerNewsPrefs.logout(HomeActivity.this);
+                    // TODO something better than a toast!!
+                    Toast.makeText(getApplicationContext(), R.string.designer_news_logged_out,
+                            Toast.LENGTH_SHORT).show();
+                }
+                return true;
+            case R.id.menu_about:
+                startActivity(new Intent(HomeActivity.this, AboutActivity.class),
+                        ActivityOptions.makeSceneTransitionAnimation(this).toBundle());
+                return true;
+        }
+        return super.onOptionsItemSelected(item);
+    }
+
+    @Override
+    public void onBackPressed() {
+        if (drawer.isDrawerOpen(GravityCompat.END)) {
+            drawer.closeDrawer(GravityCompat.END);
+        } else {
+            super.onBackPressed();
+        }
+    }
+
+    @Override
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        switch (requestCode) {
+            case RC_SEARCH:
+                // reset the search icon which we hid
+                View searchMenuView = toolbar.findViewById(R.id.menu_search);
+                if (searchMenuView != null) {
+                    searchMenuView.setAlpha(1f);
+                }
+                if (resultCode == SearchActivity.RESULT_CODE_SAVE) {
+                    String query = data.getStringExtra(SearchActivity.EXTRA_QUERY);
+                    if (TextUtils.isEmpty(query)) return;
+                    Source dribbbleSearch = null;
+                    Source designerNewsSearch = null;
+                    boolean newSource = false;
+                    if (data.getBooleanExtra(SearchActivity.EXTRA_SAVE_DRIBBBLE, false)) {
+                        dribbbleSearch = new Source.DribbbleSearchSource(query, true);
+                        newSource = filtersAdapter.addFilter(dribbbleSearch);
+                    }
+                    if (data.getBooleanExtra(SearchActivity.EXTRA_SAVE_DESIGNER_NEWS, false)) {
+                        designerNewsSearch = new Source.DesignerNewsSearchSource(query, true);
+                        newSource |= filtersAdapter.addFilter(designerNewsSearch);
+                    }
+                    if (newSource) {
+                        highlightNewSources(dribbbleSearch, designerNewsSearch);
+                    }
+                }
+                break;
+            case RC_NEW_DESIGNER_NEWS_STORY:
+                switch (resultCode) {
+                    case PostNewDesignerNewsStory.RESULT_DRAG_DISMISSED:
+                        // need to reshow the FAB as there's no shared element transition
+                        showFab();
+                        unregisterPostStoryResultListener();
+                        break;
+                    case PostNewDesignerNewsStory.RESULT_POSTING:
+                        showPostingProgress();
+                        break;
+                    default:
+                        unregisterPostStoryResultListener();
+                        break;
+                }
+                break;
+            case RC_NEW_DESIGNER_NEWS_LOGIN:
+                if (resultCode == RESULT_OK) {
+                    showFab();
+                }
+                break;
+            case RC_AUTH_DRIBBBLE_FOLLOWING:
+                if (resultCode == RESULT_OK) {
+                    filtersAdapter.enableFilterByKey(SourceManager.SOURCE_DRIBBBLE_FOLLOWING, this);
+                }
+                break;
+            case RC_AUTH_DRIBBBLE_USER_LIKES:
+                if (resultCode == RESULT_OK) {
+                    filtersAdapter.enableFilterByKey(
+                            SourceManager.SOURCE_DRIBBBLE_USER_LIKES, this);
+                }
+                break;
+            case RC_AUTH_DRIBBBLE_USER_SHOTS:
+                if (resultCode == RESULT_OK) {
+                    filtersAdapter.enableFilterByKey(
+                            SourceManager.SOURCE_DRIBBBLE_USER_SHOTS, this);
+                }
+                break;
+        }
+    }
+
+    @Override
+    protected void onDestroy() {
+        dataManager.cancelLoading();
+        super.onDestroy();
+    }
+
     // listener for notifying adapter when data sources are deactivated
-    private FilterAdapter.FiltersChangedListener filtersChangedListener =
-            new FilterAdapter.FiltersChangedListener() {
+    private FilterAdapter.FiltersChangedCallbacks filtersChangedCallbacks =
+            new FilterAdapter.FiltersChangedCallbacks() {
         @Override
         public void onFiltersChanged(Source changedFilter) {
             if (!changedFilter.active) {
@@ -258,15 +467,23 @@ public class HomeActivity extends Activity {
         }
     };
 
-    private int gridScrollY = 0;
-    private RecyclerView.OnScrollListener gridScroll = new RecyclerView.OnScrollListener() {
+    private RecyclerView.OnScrollListener toolbarElevation = new RecyclerView.OnScrollListener() {
         @Override
-        public void onScrolled(RecyclerView recyclerView, int dx, int dy) {
-            gridScrollY += dy;
-            if (gridScrollY > 0 && toolbar.getTranslationZ() != -1f) {
-                toolbar.setTranslationZ(-1f);
-            } else if (gridScrollY == 0 && toolbar.getTranslationZ() != 0) {
+        public void onScrollStateChanged(RecyclerView recyclerView, int newState) {
+            // we want the grid to scroll over the top of the toolbar but for the toolbar items
+            // to be clickable when visible. To achieve this we play games with elevation. The
+            // toolbar is laid out in front of the grid but when we scroll, we lower it's elevation
+            // to allow the content to pass in front (and reset when scrolled to top of the grid)
+            if (newState == RecyclerView.SCROLL_STATE_IDLE
+                    && layoutManager.findFirstVisibleItemPosition() == 0
+                    && layoutManager.findViewByPosition(0).getTop() == grid.getPaddingTop()
+                    && toolbar.getTranslationZ() != 0) {
+                // at top, reset elevation
                 toolbar.setTranslationZ(0f);
+            } else if (newState == RecyclerView.SCROLL_STATE_DRAGGING
+                    && toolbar.getTranslationZ() != -1f) {
+                // grid scrolled, lower toolbar to allow content to pass in front
+                toolbar.setTranslationZ(-1f);
             }
         }
     };
@@ -275,37 +492,157 @@ public class HomeActivity extends Activity {
     protected void fabClick() {
         if (designerNewsPrefs.isLoggedIn()) {
             Intent intent = new Intent(this, PostNewDesignerNewsStory.class);
-            intent.putExtra(FabDialogMorphSetup.EXTRA_SHARED_ELEMENT_START_COLOR,
-                    ContextCompat.getColor(this, R.color.accent));
+            FabTransform.addExtras(intent,
+                    ContextCompat.getColor(this, R.color.accent), R.drawable.ic_add_dark);
+            intent.putExtra(PostStoryService.EXTRA_BROADCAST_RESULT, true);
+            registerPostStoryResultListener();
             ActivityOptions options = ActivityOptions.makeSceneTransitionAnimation(this, fab,
                     getString(R.string.transition_new_designer_news_post));
             startActivityForResult(intent, RC_NEW_DESIGNER_NEWS_STORY, options.toBundle());
         } else {
             Intent intent = new Intent(this, DesignerNewsLogin.class);
-            intent.putExtra(FabDialogMorphSetup.EXTRA_SHARED_ELEMENT_START_COLOR,
-                    ContextCompat.getColor(this, R.color.accent));
+            FabTransform.addExtras(intent,
+                    ContextCompat.getColor(this, R.color.accent), R.drawable.ic_add_dark);
             ActivityOptions options = ActivityOptions.makeSceneTransitionAnimation(this, fab,
                     getString(R.string.transition_designer_news_login));
             startActivityForResult(intent, RC_NEW_DESIGNER_NEWS_LOGIN, options.toBundle());
         }
     }
 
-    private void checkEmptyState() {
+    BroadcastReceiver postStoryResultReceiver = new BroadcastReceiver() {
+        @Override
+        public void onReceive(Context context, Intent intent) {
+            ensurePostingProgressInflated();
+            switch (intent.getAction()) {
+                case PostStoryService.BROADCAST_ACTION_SUCCESS:
+                    // success animation
+                    AnimatedVectorDrawable complete =
+                            (AnimatedVectorDrawable) getDrawable(R.drawable.avd_upload_complete);
+                    if (complete != null) {
+                        fabPosting.setImageDrawable(complete);
+                        complete.start();
+                        fabPosting.postDelayed(new Runnable() {
+                            @Override
+                            public void run() {
+                                fabPosting.setVisibility(View.GONE);
+                            }
+                        }, 2100); // length of R.drawable.avd_upload_complete
+                    }
+
+                    // actually add the story to the grid
+                    Story newStory = intent.getParcelableExtra(PostStoryService.EXTRA_NEW_STORY);
+                    adapter.addAndResort(Collections.singletonList(newStory));
+                    break;
+                case PostStoryService.BROADCAST_ACTION_FAILURE:
+                    // failure animation
+                    AnimatedVectorDrawable failed =
+                            (AnimatedVectorDrawable) getDrawable(R.drawable.avd_upload_error);
+                    if (failed != null) {
+                        fabPosting.setImageDrawable(failed);
+                        failed.start();
+                    }
+                    // remove the upload progress 'fab' and reshow the regular one
+                    fabPosting.animate()
+                            .alpha(0f)
+                            .rotation(90f)
+                            .setStartDelay(2000L) // leave error on screen briefly
+                            .setDuration(300L)
+                            .setInterpolator(AnimUtils.getFastOutSlowInInterpolator(HomeActivity
+                                    .this))
+                            .setListener(new AnimatorListenerAdapter() {
+                                @Override
+                                public void onAnimationEnd(Animator animation) {
+                                    fabPosting.setVisibility(View.GONE);
+                                    fabPosting.setAlpha(1f);
+                                    fabPosting.setRotation(0f);
+                                }
+                            });
+                    break;
+            }
+            unregisterPostStoryResultListener();
+        }
+    };
+
+    void registerPostStoryResultListener() {
+        IntentFilter intentFilter = new IntentFilter();
+        intentFilter.addAction(PostStoryService.BROADCAST_ACTION_SUCCESS);
+        intentFilter.addAction(PostStoryService.BROADCAST_ACTION_FAILURE);
+        LocalBroadcastManager.getInstance(this).
+                registerReceiver(postStoryResultReceiver, intentFilter);
+    }
+
+    void unregisterPostStoryResultListener() {
+        LocalBroadcastManager.getInstance(this).unregisterReceiver(postStoryResultReceiver);
+    }
+
+    void revealPostingProgress() {
+        Animator reveal = ViewAnimationUtils.createCircularReveal(fabPosting,
+                (int) fabPosting.getPivotX(),
+                (int) fabPosting.getPivotY(),
+                0f,
+                fabPosting.getWidth() / 2)
+                .setDuration(600L);
+        reveal.setInterpolator(AnimUtils.getFastOutLinearInInterpolator(this));
+        reveal.start();
+        AnimatedVectorDrawable uploading =
+                (AnimatedVectorDrawable) getDrawable(R.drawable.avd_uploading);
+        if (uploading != null) {
+            fabPosting.setImageDrawable(uploading);
+            uploading.start();
+        }
+    }
+
+    void ensurePostingProgressInflated() {
+        if (fabPosting != null) return;
+        fabPosting = (ImageButton) ((ViewStub) findViewById(R.id.stub_posting_progress)).inflate();
+    }
+
+    void checkEmptyState() {
         if (adapter.getDataItemCount() == 0) {
             // if grid is empty check whether we're loading or if no filters are selected
             if (filtersAdapter.getEnabledSourcesCount() > 0) {
-                loading.setVisibility(View.VISIBLE);
-                setNoFiltersEmptyTextVisibility(View.GONE);
+                if (connected) {
+                    loading.setVisibility(View.VISIBLE);
+                    setNoFiltersEmptyTextVisibility(View.GONE);
+                }
             } else {
                 loading.setVisibility(View.GONE);
                 setNoFiltersEmptyTextVisibility(View.VISIBLE);
             }
-            // ensure grid scroll tracking/toolbar z-order is reset
-            gridScrollY = 0;
             toolbar.setTranslationZ(0f);
         } else {
             loading.setVisibility(View.GONE);
             setNoFiltersEmptyTextVisibility(View.GONE);
+        }
+    }
+
+    int getAuthSourceRequestCode(Source filter) {
+        switch (filter.key) {
+            case SourceManager.SOURCE_DRIBBBLE_FOLLOWING:
+                return RC_AUTH_DRIBBBLE_FOLLOWING;
+            case SourceManager.SOURCE_DRIBBBLE_USER_LIKES:
+                return RC_AUTH_DRIBBBLE_USER_LIKES;
+            case SourceManager.SOURCE_DRIBBBLE_USER_SHOTS:
+                return RC_AUTH_DRIBBBLE_USER_SHOTS;
+        }
+        throw new InvalidParameterException();
+    }
+
+    private void showPostingProgress() {
+        ensurePostingProgressInflated();
+        fabPosting.setVisibility(View.VISIBLE);
+        // if stub has just been inflated then it will not have been laid out yet
+        if (fabPosting.isLaidOut()) {
+            revealPostingProgress();
+        } else {
+            fabPosting.addOnLayoutChangeListener(new View.OnLayoutChangeListener() {
+                @Override
+                public void onLayoutChange(View v, int l, int t, int r, int b,
+                                           int oldL, int oldT, int oldR, int oldB) {
+                    fabPosting.removeOnLayoutChangeListener(this);
+                    revealPostingProgress();
+                }
+            });
         }
     }
 
@@ -351,29 +688,12 @@ public class HomeActivity extends Activity {
     }
 
     private void setupTaskDescription() {
-        // set a silhouette icon in overview as the launcher icon is a bit busy
-        // and looks bad on top of colorPrimary
-        //Bitmap overviewIcon = ImageUtils.vectorToBitmap(this, R.drawable.ic_launcher_silhouette);
-        // TODO replace launcher icon with a monochrome version from RN.
-        Bitmap overviewIcon = BitmapFactory.decodeResource(getResources(), R.mipmap.ic_launcher);
+        Bitmap overviewIcon =
+                BitmapFactory.decodeResource(getResources(), getApplicationInfo().icon);
         setTaskDescription(new ActivityManager.TaskDescription(getString(R.string.app_name),
                 overviewIcon,
                 ContextCompat.getColor(this, R.color.primary)));
         overviewIcon.recycle();
-    }
-
-    @Override
-    protected void onResume() {
-        super.onResume();
-        dribbblePrefs.addLoginStatusListener(dataManager);
-        dribbblePrefs.addLoginStatusListener(filtersAdapter);
-    }
-
-    @Override
-    protected void onPause() {
-        dribbblePrefs.removeLoginStatusListener(dataManager);
-        dribbblePrefs.removeLoginStatusListener(filtersAdapter);
-        super.onPause();
     }
 
     private void animateToolbar() {
@@ -392,192 +712,7 @@ public class HomeActivity extends Activity {
                     .scaleX(1f)
                     .setStartDelay(300)
                     .setDuration(900)
-                    .setInterpolator(AnimUtils.getMaterialInterpolator(this));
-        }
-        View amv = toolbar.getChildAt(1);
-        if (amv != null & amv instanceof ActionMenuView) {
-            ActionMenuView actions = (ActionMenuView) amv;
-            popAnim(actions.getChildAt(0), 500, 200); // filter
-            popAnim(actions.getChildAt(1), 700, 200); // overflow
-        }
-    }
-
-    private void popAnim(View v, int startDelay, int duration) {
-        if (v != null) {
-            v.setAlpha(0f);
-            v.setScaleX(0f);
-            v.setScaleY(0f);
-
-            v.animate()
-                    .alpha(1f)
-                    .scaleX(1f)
-                    .scaleY(1f)
-                    .setStartDelay(startDelay)
-                    .setDuration(duration)
-                    .setInterpolator(AnimationUtils.loadInterpolator(this, android.R.interpolator
-                            .overshoot));
-        }
-    }
-
-    @Override
-    public boolean onCreateOptionsMenu(Menu menu) {
-        getMenuInflater().inflate(R.menu.main, menu);
-        return true;
-    }
-
-    @Override
-    public boolean onPrepareOptionsMenu(Menu menu) {
-        MenuItem dribbbleLogin = menu.findItem(R.id.menu_dribbble_login);
-        if (dribbbleLogin != null) {
-            dribbbleLogin.setTitle(dribbblePrefs.isLoggedIn() ? R.string.dribbble_log_out : R
-                    .string.dribbble_login);
-        }
-        MenuItem designerNewsLogin = menu.findItem(R.id.menu_designer_news_login);
-        if (designerNewsLogin != null) {
-            designerNewsLogin.setTitle(designerNewsPrefs.isLoggedIn() ? R.string
-                    .designer_news_log_out : R.string.designer_news_login);
-        }
-
-        return true;
-    }
-
-    @Override
-    public boolean onOptionsItemSelected(MenuItem item) {
-        switch (item.getItemId()) {
-            case R.id.menu_filter:
-                drawer.openDrawer(GravityCompat.END);
-                return true;
-            case R.id.menu_search:
-                // get the icon's location on screen to pass through to the search screen
-                View searchMenuView = toolbar.findViewById(R.id.menu_search);
-                int[] loc = new int[2];
-                searchMenuView.getLocationOnScreen(loc);
-                startActivityForResult(SearchActivity.createStartIntent(this, loc[0], loc[0] +
-                        (searchMenuView.getWidth() / 2)), RC_SEARCH, ActivityOptions
-                        .makeSceneTransitionAnimation(this).toBundle());
-                searchMenuView.setAlpha(0f);
-                return true;
-            case R.id.menu_dribbble_login:
-                if (!dribbblePrefs.isLoggedIn()) {
-                    dribbblePrefs.login(HomeActivity.this);
-                } else {
-                    dribbblePrefs.logout();
-                    // TODO something better than a toast!!
-                    Toast.makeText(getApplicationContext(), R.string.dribbble_logged_out, Toast
-                            .LENGTH_SHORT).show();
-                }
-                return true;
-            case R.id.menu_designer_news_login:
-                if (!designerNewsPrefs.isLoggedIn()) {
-                    startActivity(new Intent(this, DesignerNewsLogin.class));
-                } else {
-                    designerNewsPrefs.logout();
-                    // TODO something better than a toast!!
-                    Toast.makeText(getApplicationContext(), R.string.designer_news_logged_out,
-                            Toast.LENGTH_SHORT).show();
-                }
-                return true;
-            case R.id.menu_about:
-                startActivity(new Intent(HomeActivity.this, AboutActivity.class));
-                return true;
-        }
-        return super.onOptionsItemSelected(item);
-    }
-
-    @Override
-    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
-        switch (requestCode) {
-            case RC_SEARCH:
-                // reset the search icon which we hid
-                View searchMenuView = toolbar.findViewById(R.id.menu_search);
-                if (searchMenuView != null) {
-                    searchMenuView.setAlpha(1f);
-                }
-                if (resultCode == SearchActivity.RESULT_CODE_SAVE) {
-                    String query = data.getStringExtra(SearchActivity.EXTRA_QUERY);
-                    if (TextUtils.isEmpty(query)) return;
-                    Source dribbbleSearch = null;
-                    Source designerNewsSearch = null;
-                    boolean newSource = false;
-                    if (data.getBooleanExtra(SearchActivity.EXTRA_SAVE_DRIBBBLE, false)) {
-                        dribbbleSearch = new Source.DribbbleSearchSource(query, true);
-                        newSource |= filtersAdapter.addFilter(dribbbleSearch);
-                    }
-                    if (data.getBooleanExtra(SearchActivity.EXTRA_SAVE_DESIGNER_NEWS, false)) {
-                        designerNewsSearch = new Source.DesignerNewsSearchSource(query, true);
-                        newSource |= filtersAdapter.addFilter(designerNewsSearch);
-                    }
-                    if (newSource && (dribbbleSearch != null || designerNewsSearch != null)) {
-                        highlightNewSources(dribbbleSearch, designerNewsSearch);
-                    }
-                }
-                break;
-            case RC_NEW_DESIGNER_NEWS_STORY:
-                if (resultCode == PostNewDesignerNewsStory.RESULT_DRAG_DISMISSED) {
-                    // need to reshow the FAB as there's no shared element transition
-                    showFab();
-                } else if (resultCode == PostNewDesignerNewsStory.RESULT_POST) {
-                    String title = data.getStringExtra(PostNewDesignerNewsStory.EXTRA_STORY_TITLE);
-                    String url = data.getStringExtra(PostNewDesignerNewsStory.EXTRA_STORY_URL);
-                    String comment = data.getStringExtra(
-                            PostNewDesignerNewsStory.EXTRA_STORY_COMMENT);
-                    if (!TextUtils.isEmpty(title)) {
-                        NewStoryRequest storyToPost = null;
-                        if (!TextUtils.isEmpty(url)) {
-                            storyToPost = NewStoryRequest.createWithUrl(title, url);
-                        } else if (!TextUtils.isEmpty(comment)) {
-                            storyToPost = NewStoryRequest.createWithComment(title, comment);
-                        }
-                        if (storyToPost != null) {
-                            // TODO: move this to a service in follow up CL?
-                            DesignerNewsService designerNewsApi = new RestAdapter.Builder()
-                                    .setEndpoint(DesignerNewsService.ENDPOINT)
-                                    .setRequestInterceptor(new ClientAuthInterceptor
-                                            (designerNewsPrefs.getAccessToken(),
-                                                    BuildConfig.DESIGNER_NEWS_CLIENT_ID))
-                                    .build()
-                                    .create(DesignerNewsService.class);
-                            designerNewsApi.postStory(storyToPost, new Callback<StoriesResponse>() {
-                                @Override
-                                public void success(StoriesResponse story, Response response) {
-                                    if (story != null
-                                            && story.stories != null
-                                            && story.stories.size() > 0) {
-                                        long id = story.stories.get(0).id;
-                                    }
-                                }
-
-                                @Override
-                                public void failure(RetrofitError error) {
-                                    Log.e("HomeActivity", "Failed posting story", error);
-                                }
-                            });
-                        }
-                    }
-                }
-                break;
-            case RC_NEW_DESIGNER_NEWS_LOGIN:
-                if (resultCode == RESULT_OK) {
-                    showFab();
-                }
-                break;
-            case RC_AUTH_DRIBBBLE_FOLLOWING:
-                if (resultCode == RESULT_OK) {
-                    filtersAdapter.enableFilterByKey(SourceManager.SOURCE_DRIBBBLE_FOLLOWING, this);
-                }
-                break;
-            case RC_AUTH_DRIBBBLE_USER_LIKES:
-                if (resultCode == RESULT_OK) {
-                    filtersAdapter.enableFilterByKey(
-                            SourceManager.SOURCE_DRIBBBLE_USER_LIKES, this);
-                }
-                break;
-            case RC_AUTH_DRIBBBLE_USER_SHOTS:
-                if (resultCode == RESULT_OK) {
-                    filtersAdapter.enableFilterByKey(
-                            SourceManager.SOURCE_DRIBBBLE_USER_SHOTS, this);
-                }
-                break;
+                    .setInterpolator(AnimUtils.getFastOutSlowInInterpolator(this));
         }
     }
 
@@ -592,17 +727,16 @@ public class HomeActivity extends Activity {
                 .scaleY(1f)
                 .translationY(0f)
                 .setDuration(300L)
-                .setInterpolator(AnimationUtils.loadInterpolator(this, android.R.interpolator
-                        .linear_out_slow_in))
+                .setInterpolator(AnimUtils.getLinearOutSlowInInterpolator(this))
                 .start();
     }
 
     /**
-     * Highlight the new item by:
+     * Highlight the new source(s) by:
      *      1. opening the drawer
-     *      2. scrolling it into view
-     *      3. flashing it's background
-     *      4. closing the drawer
+     *      2. scrolling new source(s) into view
+     *      3. flashing new source(s) background
+     *      4. closing the drawer (if user hasn't interacted with it)
      */
     private void highlightNewSources(final Source... sources) {
         final Runnable closeDrawerRunnable = new Runnable() {
@@ -611,7 +745,7 @@ public class HomeActivity extends Activity {
                 drawer.closeDrawer(GravityCompat.END);
             }
         };
-        drawer.setDrawerListener(new DrawerLayout.SimpleDrawerListener() {
+        drawer.addDrawerListener(new DrawerLayout.SimpleDrawerListener() {
 
             // if the user interacts with the filters while it's open then don't auto-close
             private final View.OnTouchListener filtersTouch = new View.OnTouchListener() {
@@ -634,13 +768,7 @@ public class HomeActivity extends Activity {
                 int scrollTo = Collections.max(filterPositions);
                 filtersList.smoothScrollToPosition(scrollTo);
                 for (int position : filterPositions) {
-                    FilterAdapter.FilterViewHolder holder = (FilterAdapter.FilterViewHolder)
-                            filtersList.findViewHolderForAdapterPosition(position);
-                    if (holder != null) {
-                        // this is failing for the first saved search, then working for subsequent calls
-                        // TODO work out why!
-                        holder.highlightFilter();
-                    }
+                    filtersAdapter.highlightFilter(position);
                 }
                 filtersList.setOnTouchListener(filtersTouch);
             }
@@ -649,6 +777,7 @@ public class HomeActivity extends Activity {
             public void onDrawerClosed(View drawerView) {
                 // reset
                 filtersList.setOnTouchListener(null);
+                drawer.removeDrawerListener(this);
             }
 
             @Override
@@ -660,43 +789,55 @@ public class HomeActivity extends Activity {
             }
         });
         drawer.openDrawer(GravityCompat.END);
-        drawer.postDelayed(closeDrawerRunnable, 2000);
-    }
-
-    @Override
-    public void onBackPressed() {
-        if (drawer.isDrawerOpen(GravityCompat.END)) {
-            drawer.closeDrawer(GravityCompat.END);
-        } else {
-            super.onBackPressed();
-        }
+        drawer.postDelayed(closeDrawerRunnable, 2000L);
     }
 
     private void checkConnectivity() {
-        ConnectivityManager connectivityManager
+        final ConnectivityManager connectivityManager
                 = (ConnectivityManager) getSystemService(Context.CONNECTIVITY_SERVICE);
-        NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
-        boolean connected = activeNetworkInfo != null && activeNetworkInfo.isConnected();
+        final NetworkInfo activeNetworkInfo = connectivityManager.getActiveNetworkInfo();
+        connected = activeNetworkInfo != null && activeNetworkInfo.isConnected();
         if (!connected) {
             loading.setVisibility(View.GONE);
-            ViewStub stub = (ViewStub) findViewById(R.id.stub_no_connection);
-            ImageView iv = (ImageView) stub.inflate();
+            if (noConnection == null) {
+                final ViewStub stub = (ViewStub) findViewById(R.id.stub_no_connection);
+                noConnection = (ImageView) stub.inflate();
+            }
             final AnimatedVectorDrawable avd =
                     (AnimatedVectorDrawable) getDrawable(R.drawable.avd_no_connection);
-            iv.setImageDrawable(avd);
-            avd.start();
+            if (noConnection != null && avd != null) {
+                noConnection.setImageDrawable(avd);
+                avd.start();
+            }
+
+            connectivityManager.registerNetworkCallback(
+                    new NetworkRequest.Builder()
+                    .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET).build(),
+                    connectivityCallback);
+            monitoringConnectivity = true;
         }
     }
 
-    private int getAuthSourceRequestCode(Source filter) {
-        switch (filter.key) {
-            case SourceManager.SOURCE_DRIBBBLE_FOLLOWING:
-                return RC_AUTH_DRIBBBLE_FOLLOWING;
-            case SourceManager.SOURCE_DRIBBBLE_USER_LIKES:
-                return RC_AUTH_DRIBBBLE_USER_LIKES;
-            case SourceManager.SOURCE_DRIBBBLE_USER_SHOTS:
-                return RC_AUTH_DRIBBBLE_USER_SHOTS;
+    private ConnectivityManager.NetworkCallback connectivityCallback
+            = new ConnectivityManager.NetworkCallback() {
+        @Override
+        public void onAvailable(Network network) {
+            connected = true;
+            if (adapter.getDataItemCount() != 0) return;
+            runOnUiThread(new Runnable() {
+                @Override
+                public void run() {
+                    TransitionManager.beginDelayedTransition(drawer);
+                    noConnection.setVisibility(View.GONE);
+                    loading.setVisibility(View.VISIBLE);
+                    dataManager.loadAllDataSources();
+                }
+            });
         }
-        throw new InvalidParameterException();
-    }
+
+        @Override
+        public void onLost(Network network) {
+            connected = false;
+        }
+    };
 }

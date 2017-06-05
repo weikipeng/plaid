@@ -16,20 +16,29 @@
 
 package io.plaidapp.ui.widget;
 
+import android.annotation.TargetApi;
 import android.content.Context;
 import android.content.res.TypedArray;
 import android.graphics.Canvas;
+import android.graphics.Color;
 import android.graphics.Paint;
 import android.graphics.Typeface;
+import android.os.Build;
 import android.support.annotation.ColorInt;
 import android.support.v4.view.GravityCompat;
+import android.text.Layout;
+import android.text.Selection;
+import android.text.Spannable;
+import android.text.Spanned;
 import android.text.StaticLayout;
 import android.text.TextPaint;
 import android.util.AttributeSet;
 import android.util.TypedValue;
 import android.view.Gravity;
+import android.view.MotionEvent;
 import android.view.View;
 
+import in.uncod.android.bypass.style.TouchableUrlSpan;
 import io.plaidapp.R;
 import io.plaidapp.util.FontUtil;
 
@@ -37,9 +46,10 @@ import io.plaidapp.util.FontUtil;
  * A view for displaying text that is will be overlapped by a Floating Action Button (FAB).
  * This view will indent itself at the given overlap point (as specified by
  * {@link #setFabOverlapGravity(int)}) to flow around it.
- * <p/>
+ *
  * Not actually a TextView but conforms to many of it's idioms.
  */
+@TargetApi(Build.VERSION_CODES.M)
 public class FabOverlapTextView extends View {
 
     private static final int DEFAULT_TEXT_SIZE_SP = 14;
@@ -48,12 +58,13 @@ public class FabOverlapTextView extends View {
     private int fabOverlapWidth;
     private int fabGravity;
     private int lineHeightHint;
-    private int topPaddingHint;
+    private int unalignedTopPadding;
+    private int unalignedBottomPadding;
+    private int breakStrategy;
     private StaticLayout layout;
     private CharSequence text;
     private TextPaint paint;
-    private int fabId;
-    private View fabView;
+    private TouchableUrlSpan pressedSpan;
 
     public FabOverlapTextView(Context context) {
         super(context);
@@ -77,25 +88,35 @@ public class FabOverlapTextView extends View {
     }
 
     private void init(Context context, AttributeSet attrs, int defStyleAttr, int defStyleRes) {
-        // Attribute initialization.
         paint = new TextPaint(Paint.ANTI_ALIAS_FLAG);
         TypedArray a = context.obtainStyledAttributes(attrs, R.styleable.FabOverlapTextView);
 
-        fabId = a.getResourceId(R.styleable.FabOverlapTextView_fabId, 0);
-        setFabOverlapGravity(a.getInt(R.styleable.FabOverlapTextView_fabGravity, Gravity.BOTTOM |
-                Gravity.RIGHT));
+        float defaultTextSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
+                DEFAULT_TEXT_SIZE_SP, getResources().getDisplayMetrics());
+
+        setFabOverlapGravity(a.getInt(R.styleable.FabOverlapTextView_fabGravity,
+                Gravity.BOTTOM | Gravity.RIGHT));
         setFabOverlapHeight(a.getDimensionPixelSize(R.styleable
                 .FabOverlapTextView_fabOverlayHeight, 0));
         setFabOverlapWidth(a.getDimensionPixelSize(R.styleable
                 .FabOverlapTextView_fabOverlayWidth, 0));
 
-        // TODO handle TextAppearance
-        /*if (a.hasValue(R.styleable.FabOverlapTextView_android_textAppearance)) {
-            final int textAppearanceId = a.getResourceId(R.styleable
-                            .FabOverlapTextView_android_textAppearance,
+        if (a.hasValue(R.styleable.FabOverlapTextView_android_textAppearance)) {
+            final int textAppearance = a.getResourceId(
+                    R.styleable.FabOverlapTextView_android_textAppearance,
                     android.R.style.TextAppearance);
-            setTextAppearance(textAppearanceId);
-        }*/
+            TypedArray atp = getContext().obtainStyledAttributes(textAppearance,
+                    R.styleable.FontTextAppearance);
+            paint.setColor(atp.getColor(R.styleable.FontTextAppearance_android_textColor,
+                    Color.BLACK));
+            paint.setTextSize(atp.getDimensionPixelSize(
+                    R.styleable.FontTextAppearance_android_textSize, (int) defaultTextSize));
+            if (atp.hasValue(R.styleable.FontTextAppearance_font)) {
+                paint.setTypeface(FontUtil.get(getContext(),
+                        atp.getString(R.styleable.FontTextAppearance_font)));
+            }
+            atp.recycle();
+        }
 
         if (a.hasValue(R.styleable.FabOverlapTextView_font)) {
             setFont(a.getString(R.styleable.FabOverlapTextView_font));
@@ -104,14 +125,17 @@ public class FabOverlapTextView extends View {
         if (a.hasValue(R.styleable.FabOverlapTextView_android_textColor)) {
             setTextColor(a.getColor(R.styleable.FabOverlapTextView_android_textColor, 0));
         }
-
-        float defaultTextSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP,
-                DEFAULT_TEXT_SIZE_SP, getResources().getDisplayMetrics());
-        setTextSize(a.getDimensionPixelSize(R.styleable.FabOverlapTextView_android_textSize,
-                (int) defaultTextSize));
+        if (a.hasValue(R.styleable.FabOverlapTextView_android_textSize)) {
+            setTextSize(a.getDimensionPixelSize(R.styleable.FabOverlapTextView_android_textSize,
+                    (int) defaultTextSize));
+        }
 
         lineHeightHint = a.getDimensionPixelSize(R.styleable.FabOverlapTextView_lineHeightHint, 0);
-        topPaddingHint = a.getDimensionPixelSize(R.styleable.FabOverlapTextView_topPaddingHint, 0);
+        unalignedTopPadding = getPaddingTop();
+        unalignedBottomPadding = getPaddingBottom();
+
+        breakStrategy = a.getInt(R.styleable.FabOverlapTextView_android_breakStrategy,
+                Layout.BREAK_STRATEGY_BALANCED);
 
         a.recycle();
     }
@@ -161,89 +185,44 @@ public class FabOverlapTextView extends View {
         paint.setFontFeatureSettings(fontFeatureSettings);
     }
 
-//    @Override
-//    protected void onAttachedToWindow() {
-//        super.onAttachedToWindow();
-//        if (fabView == null) {
-//            fabView = getRootView().findViewById(fabId);
-//        }
-//    }
-//
-//    @Override
-//    protected void onDetachedFromWindow() {
-//        fabView = null;
-//        super.onDetachedFromWindow();
-//    }
-
     private void recompute(int width) {
         if (text != null) {
             // work out the top padding and line height to align text to a 4dp grid
-            float fourDip = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4,
+            final float fourDip = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, 4,
                     getResources().getDisplayMetrics());
 
-            // Ensure that the first line's baselines sits on 4dp grid by setting the top padding
-            Paint.FontMetricsInt fm = paint.getFontMetricsInt();
-            int gridAlignedTopPadding = (int) (fourDip * (float)
-                    Math.ceil((topPaddingHint + Math.abs(fm.ascent)) / fourDip)
+            // ensure that the first line's baselines sits on 4dp grid by setting the top padding
+            final Paint.FontMetricsInt fm = paint.getFontMetricsInt();
+            final int gridAlignedTopPadding = (int) (fourDip * (float)
+                    Math.ceil((unalignedTopPadding + Math.abs(fm.ascent)) / fourDip)
                     - Math.ceil(Math.abs(fm.ascent)));
-            setPadding(getPaddingLeft(), gridAlignedTopPadding, getPaddingRight(),
-                    getPaddingBottom());
+            super.setPadding(
+                    getPaddingLeft(), gridAlignedTopPadding, getPaddingTop(), getPaddingBottom());
 
-            // Ensures line height is a multiple of 4dp
-            int fontHeight = Math.abs(fm.ascent - fm.descent) + fm.leading;
-            int baselineAlignedLineHeight = (int) (fourDip * (float) Math.ceil(lineHeightHint /
-                    fourDip));
+            // ensures line height is a multiple of 4dp
+            final int fontHeight = Math.abs(fm.ascent - fm.descent) + fm.leading;
+            final int baselineAlignedLineHeight =
+                    (int) (fourDip * (float) Math.ceil(lineHeightHint / fourDip));
 
-            // before we can workout indents we need to know how many lines of text there are; so we
-            // need to create a temporary layout :(
+            // before we can workout indents we need to know how many lines of text there are;
+            // so we need to create a temporary layout :(
             layout = StaticLayout.Builder.obtain(text, 0, text.length(), paint, width)
                     .setLineSpacing(baselineAlignedLineHeight - fontHeight, 1f)
+                    .setBreakStrategy(breakStrategy)
                     .build();
-            int preIndentedLineCount = layout.getLineCount();
-
-
-            /*int[] fabLocation = new int[2];
-            int[] ourLocation = new int[2];
-            fabView.getLocationOnScreen(fabLocation);
-            getLocationOnScreen(ourLocation);
-            ViewGroup.MarginLayoutParams fabLp = (ViewGroup.MarginLayoutParams) fabView
-            .getLayoutParams();
-            int fabLeft = fabLocation[0] - fabLp.getMarginStart();
-            int fabRight = fabLocation[0] + fabView.getWidth() + fabLp.getMarginEnd();
-            int fabWidth = fabRight - fabLeft;
-            int distanceFromLeft = fabLeft - ourLocation[0];
-            int distanceFromRight = ourLocation[0] + getWidth() - fabRight;
-            boolean leftAlignedFab = distanceFromLeft < distanceFromRight;
-
-
-            int[] leftIndents = new int[preIndentedLineCount];
-            int[] rightIndents = new int[preIndentedLineCount];
-            Rect fabRect = new Rect(fabLeft, fabLocation[1] - fabLp.topMargin, fabRight,
-            fabLocation[1] + fabView.getHeight() + fabLp.bottomMargin);
-            Rect lineRect = new Rect(ourLocation[0], ourLocation[1], ourLocation[0] + getWidth(),
-             ourLocation[1] + baselineAlignedLineHeight);
-
-            for (int line = 0; line < preIndentedLineCount; line++) {
-                if (lineRect.intersect(fabRect)) {
-                    leftIndents[line] = leftAlignedFab ? fabWidth : 0;
-                    rightIndents[line] = leftAlignedFab ? 0 : fabWidth;
-                } else {
-                    leftIndents[line] = 0;
-                    rightIndents[line] = 0;
-                }
-                lineRect.offset(0, baselineAlignedLineHeight);
-            }*/
+            final int preIndentedLineCount = layout.getLineCount();
 
             // now we can calculate the indents required for the given fab gravity
-            boolean gravityTop = (fabGravity & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.TOP;
-            boolean gravityLeft = (fabGravity & Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.LEFT;
+            final boolean gravityTop = (fabGravity & Gravity.VERTICAL_GRAVITY_MASK) == Gravity.TOP;
+            final boolean gravityLeft =
+                    (fabGravity & Gravity.HORIZONTAL_GRAVITY_MASK) == Gravity.LEFT;
             // we want to iterate forward/backward over the lines depending on whether the fab
             // overlap vertical gravity is top/bottom
             int currentLine = gravityTop ? 0 : preIndentedLineCount - 1;
             int remainingHeightOverlap = fabOverlapHeight -
                     (gravityTop ? getPaddingTop() : getPaddingBottom());
-            int[] leftIndents = new int[preIndentedLineCount];
-            int[] rightIndents = new int[preIndentedLineCount];
+            final int[] leftIndents = new int[preIndentedLineCount];
+            final int[] rightIndents = new int[preIndentedLineCount];
             do {
                 if (remainingHeightOverlap > 0) {
                     // still have overlap height to consume, set the appropriate indent
@@ -266,11 +245,15 @@ public class FabOverlapTextView extends View {
             layout = StaticLayout.Builder.obtain(text, 0, text.length(), paint, width)
                     .setLineSpacing(baselineAlignedLineHeight - fontHeight, 1f)
                     .setIndents(leftIndents, rightIndents)
+                    .setBreakStrategy(breakStrategy)
                     .build();
 
-            if (layout.getLineCount() > preIndentedLineCount) {
-                // adding indents has flown text onto a new line
-                // TODO: ?
+            // ensure that the view's height sits on the grid (as we've changed padding etc).
+            final int height = getPaddingTop() + layout.getHeight() + getPaddingBottom();
+            final float overhang = height % fourDip;
+            if (overhang != 0) {
+                super.setPadding(getPaddingLeft(), getPaddingTop(), getPaddingRight(),
+                        unalignedBottomPadding + (int) (fourDip - overhang));
             }
         }
     }
@@ -285,8 +268,9 @@ public class FabOverlapTextView extends View {
         if (layout == null || layoutWidth != layout.getWidth()) {
             recompute(layoutWidth);
         }
-        setMeasuredDimension(getPaddingLeft() + layout.getWidth() + getPaddingRight(),
-                getPaddingTop() + layout.getHeight() + getPaddingBottom());
+        setMeasuredDimension(
+                getPaddingLeft() + (layout != null ? layout.getWidth() : 0) + getPaddingRight(),
+                getPaddingTop() + (layout != null ? layout.getHeight() : 0) + getPaddingBottom());
     }
 
     @Override
@@ -297,4 +281,91 @@ public class FabOverlapTextView extends View {
             layout.draw(canvas);
         }
     }
+
+    @Override
+    public void setPadding(int left, int top, int right, int bottom) {
+        super.setPadding(left, top, right, bottom);
+        unalignedTopPadding = top;
+        unalignedBottomPadding = bottom;
+        if (layout != null) recompute(layout.getWidth());
+    }
+
+    @Override
+    public void setPaddingRelative(int start, int top, int end, int bottom) {
+        super.setPaddingRelative(start, top, end, bottom);
+        unalignedTopPadding = top;
+        unalignedBottomPadding = bottom;
+        if (layout != null) recompute(layout.getWidth());
+    }
+
+    /**
+     * This is why you don't implement your own TextView kids; you have to handle everything!
+     */
+    @Override
+    public boolean onTouchEvent(MotionEvent event) {
+        if (!(text instanceof Spanned)) return super.onTouchEvent(event);
+
+        Spannable spannedText = (Spannable) text;
+
+        boolean handled = false;
+        if (event.getAction() == MotionEvent.ACTION_DOWN) {
+            pressedSpan = getPressedSpan(spannedText, event);
+            if (pressedSpan != null) {
+                pressedSpan.setPressed(true);
+                Selection.setSelection(spannedText, spannedText.getSpanStart(pressedSpan),
+                        spannedText.getSpanEnd(pressedSpan));
+                handled = true;
+                postInvalidateOnAnimation();
+            }
+        } else if (event.getAction() == MotionEvent.ACTION_MOVE) {
+            TouchableUrlSpan touchedSpan = getPressedSpan(spannedText, event);
+            if (pressedSpan != null && touchedSpan != pressedSpan) {
+                pressedSpan.setPressed(false);
+                pressedSpan = null;
+                Selection.removeSelection(spannedText);
+                postInvalidateOnAnimation();
+            }
+        } else if (event.getAction() == MotionEvent.ACTION_UP) {
+            if (pressedSpan != null) {
+                pressedSpan.setPressed(false);
+                pressedSpan.onClick(this);
+                handled = true;
+                postInvalidateOnAnimation();
+            }
+            pressedSpan = null;
+            Selection.removeSelection(spannedText);
+        } else {
+            if (pressedSpan != null) {
+                pressedSpan.setPressed(false);
+                handled = true;
+                postInvalidateOnAnimation();
+            }
+            pressedSpan = null;
+            Selection.removeSelection(spannedText);
+        }
+        return handled;
+    }
+
+    private TouchableUrlSpan getPressedSpan(Spannable spannable, MotionEvent event) {
+
+        int x = (int) event.getX();
+        int y = (int) event.getY();
+
+        x -= getPaddingLeft();
+        y -= getPaddingTop();
+
+        x += getScrollX();
+        y += getScrollY();
+
+        int line = layout.getLineForVertical(y);
+        int off = layout.getOffsetForHorizontal(line, x);
+
+        TouchableUrlSpan[] link = spannable.getSpans(off, off, TouchableUrlSpan.class);
+        TouchableUrlSpan touchedSpan = null;
+        if (link.length > 0) {
+            touchedSpan = link[0];
+        }
+        return touchedSpan;
+    }
+
 }

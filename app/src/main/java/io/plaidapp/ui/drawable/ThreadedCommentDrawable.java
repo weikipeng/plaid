@@ -19,6 +19,7 @@ package io.plaidapp.ui.drawable;
 import android.graphics.Canvas;
 import android.graphics.ColorFilter;
 import android.graphics.Paint;
+import android.graphics.PixelFormat;
 import android.graphics.drawable.Drawable;
 import android.support.annotation.ColorInt;
 
@@ -48,6 +49,11 @@ public class ThreadedCommentDrawable extends Drawable {
         paint.setStyle(Paint.Style.STROKE);
         paint.setStrokeWidth(threadWidth);
         paint.setColor(THREAD_COLOR);
+    }
+
+    public ThreadedCommentDrawable(int threadWidth, int gap, int depth) {
+        this(threadWidth, gap);
+        setDepth(depth);
     }
 
     public void setDepth(int depth) {
@@ -80,7 +86,7 @@ public class ThreadedCommentDrawable extends Drawable {
 
     @Override
     public int getOpacity() {
-        return paint.getAlpha();
+        return paint.getAlpha() == 255 ? PixelFormat.OPAQUE : PixelFormat.TRANSLUCENT;
     }
 
     @Override

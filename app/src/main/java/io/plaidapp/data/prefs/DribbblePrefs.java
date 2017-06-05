@@ -22,11 +22,21 @@ import android.content.SharedPreferences;
 import android.net.Uri;
 import android.text.TextUtils;
 
+import com.google.gson.Gson;
+import com.google.gson.GsonBuilder;
+
 import java.util.ArrayList;
+import java.util.Arrays;
 import java.util.List;
 
 import io.plaidapp.BuildConfig;
+import io.plaidapp.data.api.AuthInterceptor;
+import io.plaidapp.data.api.DenvelopingConverter;
+import io.plaidapp.data.api.dribbble.DribbbleService;
 import io.plaidapp.data.api.dribbble.model.User;
+import okhttp3.OkHttpClient;
+import retrofit2.Retrofit;
+import retrofit2.converter.gson.GsonConverterFactory;
 
 /**
  * Storing dribbble user state.
@@ -44,6 +54,9 @@ public class DribbblePrefs {
     private static final String KEY_USER_NAME = "KEY_USER_NAME";
     private static final String KEY_USER_USERNAME = "KEY_USER_USERNAME";
     private static final String KEY_USER_AVATAR = "KEY_USER_AVATAR";
+    private static final String KEY_USER_TYPE = "KEY_USER_TYPE";
+    private static final List<String> CREATIVE_TYPES
+            = Arrays.asList(new String[] { "Player", "Team" });
 
     private static volatile DribbblePrefs singleton;
     private final SharedPreferences prefs;
@@ -54,6 +67,8 @@ public class DribbblePrefs {
     private String userName;
     private String userUsername;
     private String userAvatar;
+    private String userType;
+    private DribbbleService api;
     private List<DribbbleLoginStatusListener> loginStatusListeners;
 
     public static DribbblePrefs get(Context context) {
@@ -75,16 +90,17 @@ public class DribbblePrefs {
             userName = prefs.getString(KEY_USER_NAME, null);
             userUsername = prefs.getString(KEY_USER_USERNAME, null);
             userAvatar = prefs.getString(KEY_USER_AVATAR, null);
+            userType = prefs.getString(KEY_USER_TYPE, null);
         }
+    }
+
+    public interface DribbbleLoginStatusListener {
+        void onDribbbleLogin();
+        void onDribbbleLogout();
     }
 
     public boolean isLoggedIn() {
         return isLoggedIn;
-    }
-
-    public String getAccessToken() {
-        return !TextUtils.isEmpty(accessToken) ? accessToken
-                : BuildConfig.DRIBBBLE_CLIENT_ACCESS_TOKEN;
     }
 
     public void setAccessToken(String accessToken) {
@@ -92,6 +108,7 @@ public class DribbblePrefs {
             this.accessToken = accessToken;
             isLoggedIn = true;
             prefs.edit().putString(KEY_ACCESS_TOKEN, accessToken).apply();
+            createApi();
             dispatchLoginEvent();
         }
     }
@@ -102,11 +119,13 @@ public class DribbblePrefs {
             userUsername = user.username;
             userId = user.id;
             userAvatar = user.avatar_url;
+            userType = user.type;
             SharedPreferences.Editor editor = prefs.edit();
             editor.putLong(KEY_USER_ID, userId);
             editor.putString(KEY_USER_NAME, userName);
             editor.putString(KEY_USER_USERNAME, userUsername);
             editor.putString(KEY_USER_AVATAR, userAvatar);
+            editor.putString(KEY_USER_TYPE, userType);
             editor.apply();
         }
     }
@@ -127,13 +146,23 @@ public class DribbblePrefs {
         return userAvatar;
     }
 
+    public boolean userCanPost() {
+        return CREATIVE_TYPES.contains(userType);
+    }
+
     public User getUser() {
         return new User.Builder()
                 .setId(userId)
                 .setName(userName)
                 .setUsername(userUsername)
                 .setAvatarUrl(userAvatar)
+                .setType(userType)
                 .build();
+    }
+
+    public DribbbleService getApi() {
+        if (api == null) createApi();
+        return api;
     }
 
     public void logout() {
@@ -143,12 +172,15 @@ public class DribbblePrefs {
         userName = null;
         userUsername = null;
         userAvatar = null;
+        userType = null;
         SharedPreferences.Editor editor = prefs.edit();
         editor.putString(KEY_ACCESS_TOKEN, null);
         editor.putLong(KEY_USER_ID, 0l);
         editor.putString(KEY_USER_NAME, null);
         editor.putString(KEY_USER_AVATAR, null);
+        editor.putString(KEY_USER_TYPE, null);
         editor.apply();
+        createApi();
         dispatchLogoutEvent();
     }
 
@@ -170,7 +202,7 @@ public class DribbblePrefs {
     }
 
     private void dispatchLoginEvent() {
-        if (loginStatusListeners != null && loginStatusListeners.size() > 0) {
+        if (loginStatusListeners != null && !loginStatusListeners.isEmpty()) {
             for (DribbbleLoginStatusListener listener : loginStatusListeners) {
                 listener.onDribbbleLogin();
             }
@@ -178,16 +210,32 @@ public class DribbblePrefs {
     }
 
     private void dispatchLogoutEvent() {
-        if (loginStatusListeners != null && loginStatusListeners.size() > 0) {
+        if (loginStatusListeners != null && !loginStatusListeners.isEmpty()) {
             for (DribbbleLoginStatusListener listener : loginStatusListeners) {
                 listener.onDribbbleLogout();
             }
         }
     }
 
-    public interface DribbbleLoginStatusListener {
-        void onDribbbleLogin();
-        void onDribbbleLogout();
+    private void createApi() {
+        final OkHttpClient client = new OkHttpClient.Builder()
+                .addInterceptor(new AuthInterceptor(getAccessToken()))
+                .build();
+        final Gson gson = new GsonBuilder()
+                .setDateFormat(DribbbleService.DATE_FORMAT)
+                .create();
+        api = new Retrofit.Builder()
+                .baseUrl(DribbbleService.ENDPOINT)
+                .client(client)
+                .addConverterFactory(new DenvelopingConverter(gson))
+                .addConverterFactory(GsonConverterFactory.create(gson))
+                .build()
+                .create((DribbbleService.class));
+    }
+
+    private String getAccessToken() {
+        return !TextUtils.isEmpty(accessToken) ? accessToken
+                : BuildConfig.DRIBBBLE_CLIENT_ACCESS_TOKEN;
     }
 
 }

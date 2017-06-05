@@ -18,13 +18,20 @@ package io.plaidapp.data.prefs;
 
 import android.content.Context;
 import android.content.SharedPreferences;
-import android.support.annotation.Nullable;
+import android.support.annotation.NonNull;
 import android.text.TextUtils;
 
-import java.util.ArrayList;
-import java.util.List;
+import com.google.gson.Gson;
 
+import io.plaidapp.BuildConfig;
+import io.plaidapp.data.api.ClientAuthInterceptor;
+import io.plaidapp.data.api.DenvelopingConverter;
+import io.plaidapp.data.api.designernews.DesignerNewsService;
 import io.plaidapp.data.api.designernews.model.User;
+import io.plaidapp.util.ShortcutHelper;
+import okhttp3.OkHttpClient;
+import retrofit2.Retrofit;
+import retrofit2.converter.gson.GsonConverterFactory;
 
 /**
  * Storing Designer News user state
@@ -45,7 +52,7 @@ public class DesignerNewsPrefs {
     private long userId;
     private String username;
     private String userAvatar;
-    private List<DesignerNewsLoginStatusListener> loginStatusListeners;
+    private DesignerNewsService api;
 
     public static DesignerNewsPrefs get(Context context) {
         if (singleton == null) {
@@ -72,16 +79,13 @@ public class DesignerNewsPrefs {
         return isLoggedIn;
     }
 
-    public @Nullable String getAccessToken() {
-        return accessToken;
-    }
-
-    public void setAccessToken(String accessToken) {
+    public void setAccessToken(@NonNull Context context, String accessToken) {
         if (!TextUtils.isEmpty(accessToken)) {
             this.accessToken = accessToken;
             isLoggedIn = true;
             prefs.edit().putString(KEY_ACCESS_TOKEN, accessToken).apply();
-            dispatchLoginEvent();
+            createApi();
+            ShortcutHelper.enablePostShortcut(context);
         }
     }
 
@@ -110,7 +114,15 @@ public class DesignerNewsPrefs {
         return userAvatar;
     }
 
-    public void logout() {
+    public User getUser() {
+        return new User.Builder()
+                .setId(userId)
+                .setDisplayName(username)
+                .setPortraitUrl(userAvatar)
+                .build();
+    }
+
+    public void logout(@NonNull Context context) {
         isLoggedIn = false;
         accessToken = null;
         username = null;
@@ -121,41 +133,28 @@ public class DesignerNewsPrefs {
         editor.putString(KEY_USER_NAME, null);
         editor.putString(KEY_USER_AVATAR, null);
         editor.apply();
-        dispatchLogoutEvent();
+        createApi();
+        ShortcutHelper.disablePostShortcut(context);
     }
 
-    public void addLoginStatusListener(DesignerNewsLoginStatusListener listener) {
-        if (loginStatusListeners == null) {
-            loginStatusListeners = new ArrayList<>();
-        }
-        loginStatusListeners.add(listener);
+    public DesignerNewsService getApi() {
+        if (api == null) createApi();
+        return api;
     }
 
-    public void removeLoginStatusListener(DesignerNewsLoginStatusListener listener) {
-        if (loginStatusListeners != null) {
-            loginStatusListeners.remove(listener);
-        }
-    }
-
-    private void dispatchLoginEvent() {
-        if (loginStatusListeners != null && loginStatusListeners.size() > 0) {
-            for (DesignerNewsLoginStatusListener listener : loginStatusListeners) {
-                listener.onDesignerNewsLogin();
-            }
-        }
-    }
-
-    private void dispatchLogoutEvent() {
-        if (loginStatusListeners != null && loginStatusListeners.size() > 0) {
-            for (DesignerNewsLoginStatusListener listener : loginStatusListeners) {
-                listener.onDesignerNewsLogout();
-            }
-        }
-    }
-
-    public interface DesignerNewsLoginStatusListener {
-        void onDesignerNewsLogin();
-        void onDesignerNewsLogout();
+    private void createApi() {
+        final OkHttpClient client = new OkHttpClient.Builder()
+                .addInterceptor(
+                        new ClientAuthInterceptor(accessToken, BuildConfig.DESIGNER_NEWS_CLIENT_ID))
+                .build();
+        final Gson gson = new Gson();
+        api = new Retrofit.Builder()
+                .baseUrl(DesignerNewsService.ENDPOINT)
+                .client(client)
+                .addConverterFactory(new DenvelopingConverter(gson))
+                .addConverterFactory(GsonConverterFactory.create(gson))
+                .build()
+                .create(DesignerNewsService.class);
     }
 
 }
